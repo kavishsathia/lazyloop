@@ -154,4 +154,8 @@ func TestInjectedClockAndVerifierMakeLimitReplayDeterministic(t *testing.T) {
 	if len(calls) != 1 || calls[0].Command != "recorded-check" {
 		t.Fatalf("verifier calls = %#v", calls)
 	}
+	observations := runner.TakeObservations(run.ID)
+	if len(observations) != 1 || observations[0].Name != "ready" || observations[0].Command != "recorded-check" || observations[0].Passed {
+		t.Fatalf("verification observations = %#v", observations)
+	}
 }

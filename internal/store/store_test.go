@@ -77,10 +77,10 @@ func TestTraceRecorderFiltersSessionAndPersistsEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := state.AppendActiveTrace(context.Background(), "other", json.RawMessage(`{"ignored":true}`), nil, nil, nil); err != nil {
+	if err := state.AppendActiveTrace(context.Background(), "other", json.RawMessage(`{"ignored":true}`), nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.AppendActiveTrace(context.Background(), "wanted", json.RawMessage(`{"kept":true}`), json.RawMessage(`{"permission":"allow"}`), nil, nil); err != nil {
+	if err := state.AppendActiveTrace(context.Background(), "wanted", json.RawMessage(`{"kept":true}`), json.RawMessage(`{"permission":"allow"}`), nil, nil, json.RawMessage(`[{"name":"tests","passed":true}]`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := state.StopTrace(context.Background(), trace.ID); err != nil {
@@ -90,7 +90,7 @@ func TestTraceRecorderFiltersSessionAndPersistsEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if data.Trace.Status != "complete" || len(data.Events) != 1 || data.Events[0].Sequence != 1 {
+	if data.Trace.Status != "complete" || len(data.Events) != 1 || data.Events[0].Sequence != 1 || len(data.Events[0].Verifications) == 0 {
 		t.Fatalf("trace data = %#v", data)
 	}
 }

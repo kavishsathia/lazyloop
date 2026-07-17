@@ -66,6 +66,13 @@ type VerificationCall struct {
 	Command          string `json:"command"`
 }
 
+type VerificationObservation struct {
+	Name    string `json:"name"`
+	Command string `json:"command,omitempty"`
+	Passed  bool   `json:"passed"`
+	Error   string `json:"error,omitempty"`
+}
+
 type ReplayVerifier struct {
 	mu      sync.Mutex
 	results []VerificationResult

@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS trace_events (
   decision_json BLOB,
   state_before_json BLOB,
   state_after_json BLOB,
+  verification_json BLOB,
   PRIMARY KEY(trace_id, sequence)
 );
 
@@ -158,7 +159,10 @@ CREATE INDEX IF NOT EXISTS trace_events_trace_id ON trace_events(trace_id, seque
 	if err := s.ensureColumn(ctx, "runs", "stack_json", `ALTER TABLE runs ADD COLUMN stack_json BLOB NOT NULL DEFAULT '[]'`); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 3`); err != nil {
+	if err := s.ensureColumn(ctx, "trace_events", "verification_json", `ALTER TABLE trace_events ADD COLUMN verification_json BLOB`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 4`); err != nil {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	return nil
@@ -473,12 +477,13 @@ type Trace struct {
 }
 
 type TraceEvent struct {
-	Sequence    int             `json:"sequence"`
-	ElapsedMS   int64           `json:"elapsed_ms"`
-	Input       json.RawMessage `json:"input"`
-	Decision    json.RawMessage `json:"decision,omitempty"`
-	StateBefore json.RawMessage `json:"state_before,omitempty"`
-	StateAfter  json.RawMessage `json:"state_after,omitempty"`
+	Sequence      int             `json:"sequence"`
+	ElapsedMS     int64           `json:"elapsed_ms"`
+	Input         json.RawMessage `json:"input"`
+	Decision      json.RawMessage `json:"decision,omitempty"`
+	StateBefore   json.RawMessage `json:"state_before,omitempty"`
+	StateAfter    json.RawMessage `json:"state_after,omitempty"`
+	Verifications json.RawMessage `json:"verifications,omitempty"`
 }
 
 type TraceData struct {
@@ -521,7 +526,7 @@ func (s *Store) StopTrace(ctx context.Context, traceID string) (*Trace, error) {
 	return s.GetTrace(ctx, traceID)
 }
 
-func (s *Store) AppendActiveTrace(ctx context.Context, sessionID string, input, decision, before, after json.RawMessage) error {
+func (s *Store) AppendActiveTrace(ctx context.Context, sessionID string, input, decision, before, after, verifications json.RawMessage) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -548,9 +553,9 @@ func (s *Store) AppendActiveTrace(ctx context.Context, sessionID string, input, 
 		return err
 	}
 	elapsed := time.Since(started).Milliseconds()
-	_, err = tx.ExecContext(ctx, `INSERT INTO trace_events(trace_id, sequence, elapsed_ms, input_json, decision_json, state_before_json, state_after_json)
-VALUES(?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`, traceID, sequence, elapsed,
-		[]byte(input), []byte(decision), []byte(before), []byte(after))
+	_, err = tx.ExecContext(ctx, `INSERT INTO trace_events(trace_id, sequence, elapsed_ms, input_json, decision_json, state_before_json, state_after_json, verification_json)
+VALUES(?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`, traceID, sequence, elapsed,
+		[]byte(input), []byte(decision), []byte(before), []byte(after), []byte(verifications))
 	if err != nil {
 		return err
 	}
@@ -586,7 +591,7 @@ func (s *Store) GetTraceData(ctx context.Context, traceID string) (*TraceData, e
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT sequence, elapsed_ms, input_json, decision_json, state_before_json, state_after_json
+	rows, err := s.db.QueryContext(ctx, `SELECT sequence, elapsed_ms, input_json, decision_json, state_before_json, state_after_json, verification_json
 FROM trace_events WHERE trace_id=? ORDER BY sequence`, traceID)
 	if err != nil {
 		return nil, err
@@ -596,11 +601,12 @@ FROM trace_events WHERE trace_id=? ORDER BY sequence`, traceID)
 	for rows.Next() {
 		var event TraceEvent
 		var input []byte
-		var decision, before, after []byte
-		if err := rows.Scan(&event.Sequence, &event.ElapsedMS, &input, &decision, &before, &after); err != nil {
+		var decision, before, after, verifications []byte
+		if err := rows.Scan(&event.Sequence, &event.ElapsedMS, &input, &decision, &before, &after, &verifications); err != nil {
 			return nil, err
 		}
 		event.Input, event.Decision, event.StateBefore, event.StateAfter = input, decision, before, after
+		event.Verifications = verifications
 		data.Events = append(data.Events, event)
 	}
 	return data, rows.Err()

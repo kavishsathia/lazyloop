@@ -16,10 +16,12 @@ import (
 )
 
 type Runner struct {
-	store    *store.Store
-	locks    sync.Map
-	clock    Clock
-	verifier Verifier
+	store        *store.Store
+	locks        sync.Map
+	clock        Clock
+	verifier     Verifier
+	obsMu        sync.Mutex
+	observations map[string][]VerificationObservation
 }
 
 func New(state *store.Store) *Runner {
@@ -33,7 +35,7 @@ func NewWithDependencies(state *store.Store, clock Clock, verifier Verifier) *Ru
 	if verifier == nil {
 		verifier = CommandVerifier{}
 	}
-	return &Runner{store: state, clock: clock, verifier: verifier}
+	return &Runner{store: state, clock: clock, verifier: verifier, observations: map[string][]VerificationObservation{}}
 }
 
 func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decision, error) {
@@ -137,9 +139,12 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 		case ir.StateVerify:
 			value, err := r.evaluator(run).Evaluate(ctx, *state.Expression, environment)
 			if err != nil {
+				r.recordVerification(run.ID, VerificationObservation{Name: state.Name, Command: verificationCommand(state.Expression), Error: err.Error()})
 				return fmt.Errorf("verify %s: %w", state.Name, err)
 			}
-			environment[state.Name] = truthy(value)
+			passed := truthy(value)
+			r.recordVerification(run.ID, VerificationObservation{Name: state.Name, Command: verificationCommand(state.Expression), Passed: passed})
+			environment[state.Name] = passed
 			run.StateID = state.Next
 		case ir.StateNested:
 			parentVariables, _ := json.Marshal(environment)
@@ -406,6 +411,34 @@ func (r *Runner) runLock(runID string) *sync.Mutex {
 
 func (r *Runner) evaluator(run *store.Run) Evaluator {
 	return Evaluator{WorkingDirectory: run.WorkspaceRoot, Verifier: r.verifier}
+}
+
+func verificationCommand(expression *ir.Expression) string {
+	if expression == nil || expression.Kind != ir.ExpressionCall || expression.Callee == nil || expressionPath(*expression.Callee) != "bash.check" || len(expression.Arguments) == 0 {
+		return ""
+	}
+	argument := expression.Arguments[0].Value
+	if argument.Kind == ir.ExpressionLiteral && argument.ValueKind == "string" {
+		return argument.Value
+	}
+	return ""
+}
+
+func (r *Runner) recordVerification(runID string, observation VerificationObservation) {
+	r.obsMu.Lock()
+	defer r.obsMu.Unlock()
+	r.observations[runID] = append(r.observations[runID], observation)
+}
+
+func (r *Runner) TakeObservations(runID string) []VerificationObservation {
+	if runID == "" {
+		return nil
+	}
+	r.obsMu.Lock()
+	defer r.obsMu.Unlock()
+	observations := append([]VerificationObservation(nil), r.observations[runID]...)
+	delete(r.observations, runID)
+	return observations
 }
 
 func (r *Runner) recordWithoutAdvance(ctx context.Context, event hook.Event, run *store.Run, decision hook.Decision) error {

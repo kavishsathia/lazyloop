@@ -186,7 +186,15 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 				decision, _ := json.Marshal(result)
 				beforeJSON, _ := json.Marshal(before)
 				afterJSON, _ := json.Marshal(after)
-				err = s.store.AppendActiveTrace(ctx, params.Event.SessionID, input, decision, nullableSnapshot(beforeJSON, before), nullableSnapshot(afterJSON, after))
+				runID := ""
+				if after != nil {
+					runID = after.RunID
+				} else if before != nil {
+					runID = before.RunID
+				}
+				verificationJSON, _ := json.Marshal(s.runner.TakeObservations(runID))
+				err = s.store.AppendActiveTrace(ctx, params.Event.SessionID, input, decision,
+					nullableSnapshot(beforeJSON, before), nullableSnapshot(afterJSON, after), nullableVerifications(verificationJSON))
 			}
 		}
 	default:
@@ -218,6 +226,13 @@ func (s *Server) traceSnapshot(ctx context.Context, event hook.Event) *trace.Sta
 
 func nullableSnapshot(payload []byte, snapshot *trace.StateSnapshot) json.RawMessage {
 	if snapshot == nil {
+		return nil
+	}
+	return payload
+}
+
+func nullableVerifications(payload []byte) json.RawMessage {
+	if string(payload) == "null" || string(payload) == "[]" {
 		return nil
 	}
 	return payload

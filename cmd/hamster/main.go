@@ -258,6 +258,15 @@ func fixtureFromTraceData(data store.TraceData) (trace.Fixture, error) {
 			record.StateAfter = state
 			fixture.Manifest.HasState = true
 		}
+		if len(row.Verifications) > 0 {
+			verificationPayload, err := redactor.Redact(row.Verifications)
+			if err != nil {
+				return trace.Fixture{}, err
+			}
+			if err := json.Unmarshal(verificationPayload, &record.Verifications); err != nil {
+				return trace.Fixture{}, err
+			}
+		}
 		fixture.Records = append(fixture.Records, record)
 	}
 	report, err := trace.Replay(&fixture)

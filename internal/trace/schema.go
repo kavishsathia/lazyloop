@@ -25,12 +25,20 @@ type Manifest struct {
 }
 
 type Record struct {
-	Sequence    int             `json:"sequence"`
-	ElapsedMS   int64           `json:"elapsed_ms"`
-	Input       json.RawMessage `json:"input"`
-	Decision    *hook.Decision  `json:"decision,omitempty"`
-	StateBefore *StateSnapshot  `json:"state_before,omitempty"`
-	StateAfter  *StateSnapshot  `json:"state_after,omitempty"`
+	Sequence      int             `json:"sequence"`
+	ElapsedMS     int64           `json:"elapsed_ms"`
+	Input         json.RawMessage `json:"input"`
+	Decision      *hook.Decision  `json:"decision,omitempty"`
+	StateBefore   *StateSnapshot  `json:"state_before,omitempty"`
+	StateAfter    *StateSnapshot  `json:"state_after,omitempty"`
+	Verifications []Verification  `json:"verifications,omitempty"`
+}
+
+type Verification struct {
+	Name    string `json:"name"`
+	Command string `json:"command,omitempty"`
+	Passed  bool   `json:"passed"`
+	Error   string `json:"error,omitempty"`
 }
 
 type StateSnapshot struct {
