@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"hamster/internal/hook"
 	"hamster/internal/ir"
 	"hamster/internal/protocol"
 	"hamster/internal/store"
@@ -114,6 +115,11 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 		}
 		if err = json.Unmarshal(request.Params, &params); err == nil {
 			result, err = s.store.GetRun(ctx, params.RunID)
+		}
+	case "hook.event":
+		var params hook.HookRequest
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = hook.NewEngine(s.store).Decide(ctx, params.Event)
 		}
 	default:
 		response.Error = &protocol.Error{Code: "method_not_found", Message: fmt.Sprintf("unknown method %q", request.Method)}
