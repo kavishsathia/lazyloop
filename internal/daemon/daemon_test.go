@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"hamster/internal/hook"
 	"hamster/internal/ir"
 	"hamster/internal/protocol"
 	"hamster/internal/store"
@@ -46,5 +47,38 @@ func TestRemoveStaleSocketRefusesRegularFile(t *testing.T) {
 	}
 	if err := removeStaleSocket(path); err == nil {
 		t.Fatal("removeStaleSocket() error = nil, want refusal")
+	}
+}
+
+func TestHookHandlingCapturesActiveTrace(t *testing.T) {
+	state, err := store.Open(filepath.Join(t.TempDir(), "hamster.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	recording, err := state.StartTrace(context.Background(), "wire", "codex-cli", "0.144.5", "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(state)
+	raw := json.RawMessage(`{"session_id":"session","hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"tool","tool_input":{"command":"true"}}`)
+	event, err := hook.ParseEvent(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, _ := json.Marshal(hook.HookRequest{Event: event})
+	response := server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "hook", Method: "hook.event", Params: params})
+	if response.Error != nil {
+		t.Fatalf("hook response error = %#v", response.Error)
+	}
+	if _, err := state.StopTrace(context.Background(), recording.ID); err != nil {
+		t.Fatal(err)
+	}
+	data, err := state.GetTraceData(context.Background(), recording.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Events) != 1 || string(data.Events[0].Input) != string(raw) || len(data.Events[0].Decision) == 0 {
+		t.Fatalf("captured events = %#v", data.Events)
 	}
 }

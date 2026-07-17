@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -16,6 +17,9 @@ import (
 )
 
 func RegisterFromHook(ctx context.Context, state *store.Store, runner *hamsterruntime.Runner, event hook.Event, command Command) (hook.Decision, error) {
+	if command.Name == "trace" {
+		return handleTraceCommand(ctx, state, event, command.Args)
+	}
 	if command.Name == "status" {
 		run, err := state.FindCurrentRun(ctx, event.SessionID, event.AgentID)
 		if err != nil {
@@ -48,6 +52,75 @@ func RegisterFromHook(ctx context.Context, state *store.Store, runner *hamsterru
 		Permission: "allow", Tracked: true, RunID: run.ID,
 		Context: fmt.Sprintf("Hamster started run %s for %s at state %s. Follow this loop until Hamster reports completion or escalation.", run.ID, machineLabel(machine), run.StateID),
 	}, nil
+}
+
+func handleTraceCommand(ctx context.Context, state *store.Store, event hook.Event, arguments []string) (hook.Decision, error) {
+	if len(arguments) == 0 {
+		return hook.Decision{Permission: "allow", Context: "Use hamster trace record, stop, export, import, or replay."}, nil
+	}
+	switch arguments[0] {
+	case "record":
+		name, distribution, version := "", "", ""
+		for index := 1; index < len(arguments); index++ {
+			switch arguments[index] {
+			case "--name":
+				index++
+				if index < len(arguments) {
+					name = arguments[index]
+				}
+			case "--codex-version":
+				index++
+				if index < len(arguments) {
+					version = arguments[index]
+				}
+			case "--codex-distribution":
+				index++
+				if index < len(arguments) {
+					distribution = arguments[index]
+				}
+			}
+		}
+		if name == "" {
+			return hook.Decision{Permission: "deny", Reason: "trace record requires --name", Remediation: "Choose a stable scenario name."}, nil
+		}
+		if distribution == "" || version == "" {
+			detectedDistribution, detectedVersion, err := detectCodexVersion()
+			if err != nil {
+				return hook.Decision{Permission: "deny", Reason: err.Error(), Remediation: "Pass --codex-distribution and --codex-version explicitly."}, nil
+			}
+			if distribution == "" {
+				distribution = detectedDistribution
+			}
+			if version == "" {
+				version = detectedVersion
+			}
+		}
+		started, err := state.StartTrace(ctx, name, distribution, version, event.SessionID)
+		if err != nil {
+			return hook.Decision{}, err
+		}
+		return hook.Decision{Permission: "allow", Context: fmt.Sprintf("Hamster trace %s is recording session %s as %s %s.", started.ID, event.SessionID, distribution, version)}, nil
+	case "stop":
+		stopped, err := state.StopTrace(ctx, "")
+		if err != nil {
+			return hook.Decision{}, err
+		}
+		return hook.Decision{Permission: "allow", Context: fmt.Sprintf("Hamster trace %s stopped. Export it with hamster trace export --id %s --output <directory>.", stopped.ID, stopped.ID)}, nil
+	default:
+		return hook.Decision{Permission: "allow", Context: "Hamster trace command accepted."}, nil
+	}
+}
+
+func detectCodexVersion() (string, string, error) {
+	output, err := exec.Command("codex", "--version").Output()
+	if err != nil {
+		return "", "", fmt.Errorf("detect Codex version: %w", err)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) < 2 {
+		return "", "", fmt.Errorf("unexpected Codex version output %q", strings.TrimSpace(string(output)))
+	}
+	return fields[0], fields[len(fields)-1], nil
 }
 
 func machineLabel(machine ir.Machine) string {

@@ -70,3 +70,27 @@ func TestRecordEventIsIdempotent(t *testing.T) {
 		t.Fatalf("replayed RecordEvent() = %#v, %v, %v", got, replayed, err)
 	}
 }
+
+func TestTraceRecorderFiltersSessionAndPersistsEvents(t *testing.T) {
+	state := testStore(t)
+	trace, err := state.StartTrace(context.Background(), "parallel", "codex-cli", "0.144.5", "wanted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.AppendActiveTrace(context.Background(), "other", json.RawMessage(`{"ignored":true}`), nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.AppendActiveTrace(context.Background(), "wanted", json.RawMessage(`{"kept":true}`), json.RawMessage(`{"permission":"allow"}`), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.StopTrace(context.Background(), trace.ID); err != nil {
+		t.Fatal(err)
+	}
+	data, err := state.GetTraceData(context.Background(), trace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.Trace.Status != "complete" || len(data.Events) != 1 || data.Events[0].Sequence != 1 {
+		t.Fatalf("trace data = %#v", data)
+	}
+}

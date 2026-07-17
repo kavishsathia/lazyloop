@@ -17,6 +17,7 @@ import (
 	"hamster/internal/protocol"
 	hamsterruntime "hamster/internal/runtime"
 	"hamster/internal/store"
+	"hamster/internal/trace"
 )
 
 type Paths struct {
@@ -131,9 +132,34 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 		if err = json.Unmarshal(request.Params, &params); err == nil {
 			result, err = s.store.FindCurrentRun(ctx, params.SessionID, params.AgentID)
 		}
+	case "trace.start":
+		var params struct {
+			Name              string `json:"name"`
+			CodexDistribution string `json:"codex_distribution"`
+			CodexVersion      string `json:"codex_version"`
+			SessionFilter     string `json:"session_filter,omitempty"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.StartTrace(ctx, params.Name, params.CodexDistribution, params.CodexVersion, params.SessionFilter)
+		}
+	case "trace.stop":
+		var params struct {
+			TraceID string `json:"trace_id,omitempty"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.StopTrace(ctx, params.TraceID)
+		}
+	case "trace.get":
+		var params struct {
+			TraceID string `json:"trace_id"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.GetTraceData(ctx, params.TraceID)
+		}
 	case "hook.event":
 		var params hook.HookRequest
 		if err = json.Unmarshal(request.Params, &params); err == nil {
+			before := s.traceSnapshot(ctx, params.Event)
 			var command control.Command
 			var isControl bool
 			if params.Event.ToolName == "Bash" {
@@ -151,6 +177,17 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 			} else {
 				result, err = hook.NewEngine(s.store).Decide(ctx, params.Event)
 			}
+			if err == nil {
+				after := s.traceSnapshot(ctx, params.Event)
+				input := params.Event.Raw
+				if len(input) == 0 {
+					input = hook.MarshalEvent(params.Event)
+				}
+				decision, _ := json.Marshal(result)
+				beforeJSON, _ := json.Marshal(before)
+				afterJSON, _ := json.Marshal(after)
+				err = s.store.AppendActiveTrace(ctx, params.Event.SessionID, input, decision, nullableSnapshot(beforeJSON, before), nullableSnapshot(afterJSON, after))
+			}
 		}
 	default:
 		response.Error = &protocol.Error{Code: "method_not_found", Message: fmt.Sprintf("unknown method %q", request.Method)}
@@ -165,6 +202,25 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 		response.Error = &protocol.Error{Code: "internal", Message: err.Error()}
 	}
 	return response
+}
+
+func (s *Server) traceSnapshot(ctx context.Context, event hook.Event) *trace.StateSnapshot {
+	run, err := s.store.FindCurrentRun(ctx, event.SessionID, event.AgentID)
+	if err != nil {
+		return nil
+	}
+	return &trace.StateSnapshot{
+		RunID: run.ID, ProcessID: run.ProcessID, MachineID: run.Machine.ID, MachineName: run.Machine.Name,
+		MachineKind: string(run.Machine.Kind), StateID: run.StateID, Status: run.Status,
+		Iteration: run.Iteration, StackDepth: len(run.Stack),
+	}
+}
+
+func nullableSnapshot(payload []byte, snapshot *trace.StateSnapshot) json.RawMessage {
+	if snapshot == nil {
+		return nil
+	}
+	return payload
 }
 
 func removeStaleSocket(path string) error {

@@ -16,7 +16,7 @@ type Event struct {
 	ToolInput     json.RawMessage `json:"tool_input,omitempty"`
 	ToolResponse  json.RawMessage `json:"tool_response,omitempty"`
 	WorkspaceRoot string          `json:"cwd,omitempty"`
-	Raw           json.RawMessage `json:"-"`
+	Raw           json.RawMessage `json:"raw,omitempty"`
 }
 
 type HookRequest struct {

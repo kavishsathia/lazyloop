@@ -125,8 +125,32 @@ CREATE TABLE IF NOT EXISTS run_limits (
   PRIMARY KEY(run_id, state_id)
 );
 
+CREATE TABLE IF NOT EXISTS traces (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  codex_distribution TEXT NOT NULL,
+  codex_version TEXT NOT NULL,
+  session_filter TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  stopped_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS trace_events (
+  trace_id TEXT NOT NULL REFERENCES traces(id),
+  sequence INTEGER NOT NULL,
+  elapsed_ms INTEGER NOT NULL,
+  input_json BLOB NOT NULL,
+  decision_json BLOB,
+  state_before_json BLOB,
+  state_after_json BLOB,
+  PRIMARY KEY(trace_id, sequence)
+);
+
 CREATE INDEX IF NOT EXISTS events_run_id ON events(run_id, created_at);
 CREATE INDEX IF NOT EXISTS runs_process_id ON runs(process_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_trace ON traces(status) WHERE status = 'recording';
+CREATE INDEX IF NOT EXISTS trace_events_trace_id ON trace_events(trace_id, sequence);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize schema: %w", err)
@@ -134,7 +158,7 @@ CREATE INDEX IF NOT EXISTS runs_process_id ON runs(process_id, created_at);
 	if err := s.ensureColumn(ctx, "runs", "stack_json", `ALTER TABLE runs ADD COLUMN stack_json BLOB NOT NULL DEFAULT '[]'`); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 2`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 3`); err != nil {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	return nil
@@ -435,6 +459,151 @@ func (s *Store) GetEventDecision(ctx context.Context, requestID string) (EventDe
 		return EventDecision{}, err
 	}
 	return decision, nil
+}
+
+type Trace struct {
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	CodexDistribution string     `json:"codex_distribution"`
+	CodexVersion      string     `json:"codex_version"`
+	SessionFilter     string     `json:"session_filter,omitempty"`
+	Status            string     `json:"status"`
+	StartedAt         time.Time  `json:"started_at"`
+	StoppedAt         *time.Time `json:"stopped_at,omitempty"`
+}
+
+type TraceEvent struct {
+	Sequence    int             `json:"sequence"`
+	ElapsedMS   int64           `json:"elapsed_ms"`
+	Input       json.RawMessage `json:"input"`
+	Decision    json.RawMessage `json:"decision,omitempty"`
+	StateBefore json.RawMessage `json:"state_before,omitempty"`
+	StateAfter  json.RawMessage `json:"state_after,omitempty"`
+}
+
+type TraceData struct {
+	Trace  Trace        `json:"trace"`
+	Events []TraceEvent `json:"events"`
+}
+
+func (s *Store) StartTrace(ctx context.Context, name, distribution, version, sessionFilter string) (*Trace, error) {
+	if name == "" || distribution == "" || version == "" {
+		return nil, errors.New("trace name, Codex distribution, and Codex version are required")
+	}
+	trace := &Trace{
+		ID: newID("trace"), Name: name, CodexDistribution: distribution, CodexVersion: version,
+		SessionFilter: sessionFilter, Status: "recording", StartedAt: time.Now().UTC(),
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO traces(id, name, codex_distribution, codex_version, session_filter, status, started_at)
+VALUES(?, ?, ?, ?, ?, ?, ?)`, trace.ID, trace.Name, trace.CodexDistribution, trace.CodexVersion,
+		trace.SessionFilter, trace.Status, formatTime(trace.StartedAt))
+	if err != nil {
+		return nil, fmt.Errorf("start trace: %w", err)
+	}
+	return trace, nil
+}
+
+func (s *Store) StopTrace(ctx context.Context, traceID string) (*Trace, error) {
+	if traceID == "" {
+		if err := s.db.QueryRowContext(ctx, `SELECT id FROM traces WHERE status='recording'`).Scan(&traceID); err != nil {
+			return nil, err
+		}
+	}
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `UPDATE traces SET status='complete', stopped_at=? WHERE id=? AND status='recording'`, formatTime(now), traceID)
+	if err != nil {
+		return nil, err
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return nil, errors.New("trace is not recording")
+	}
+	return s.GetTrace(ctx, traceID)
+}
+
+func (s *Store) AppendActiveTrace(ctx context.Context, sessionID string, input, decision, before, after json.RawMessage) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var traceID, startedAt string
+	var sessionFilter string
+	err = tx.QueryRowContext(ctx, `SELECT id, started_at, session_filter FROM traces WHERE status='recording'`).Scan(&traceID, &startedAt, &sessionFilter)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if sessionFilter != "" && sessionFilter != sessionID {
+		return nil
+	}
+	started, err := time.Parse(time.RFC3339Nano, startedAt)
+	if err != nil {
+		return err
+	}
+	var sequence int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence), 0) + 1 FROM trace_events WHERE trace_id=?`, traceID).Scan(&sequence); err != nil {
+		return err
+	}
+	elapsed := time.Since(started).Milliseconds()
+	_, err = tx.ExecContext(ctx, `INSERT INTO trace_events(trace_id, sequence, elapsed_ms, input_json, decision_json, state_before_json, state_after_json)
+VALUES(?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`, traceID, sequence, elapsed,
+		[]byte(input), []byte(decision), []byte(before), []byte(after))
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) GetTrace(ctx context.Context, traceID string) (*Trace, error) {
+	var trace Trace
+	var startedAt string
+	var stoppedAt sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, codex_distribution, codex_version, session_filter, status, started_at, stopped_at
+FROM traces WHERE id=?`, traceID).Scan(&trace.ID, &trace.Name, &trace.CodexDistribution, &trace.CodexVersion,
+		&trace.SessionFilter, &trace.Status, &startedAt, &stoppedAt)
+	if err != nil {
+		return nil, err
+	}
+	trace.StartedAt, err = time.Parse(time.RFC3339Nano, startedAt)
+	if err != nil {
+		return nil, err
+	}
+	if stoppedAt.Valid {
+		value, parseErr := time.Parse(time.RFC3339Nano, stoppedAt.String)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		trace.StoppedAt = &value
+	}
+	return &trace, nil
+}
+
+func (s *Store) GetTraceData(ctx context.Context, traceID string) (*TraceData, error) {
+	trace, err := s.GetTrace(ctx, traceID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT sequence, elapsed_ms, input_json, decision_json, state_before_json, state_after_json
+FROM trace_events WHERE trace_id=? ORDER BY sequence`, traceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	data := &TraceData{Trace: *trace}
+	for rows.Next() {
+		var event TraceEvent
+		var input []byte
+		var decision, before, after []byte
+		if err := rows.Scan(&event.Sequence, &event.ElapsedMS, &input, &decision, &before, &after); err != nil {
+			return nil, err
+		}
+		event.Input, event.Decision, event.StateBefore, event.StateAfter = input, decision, before, after
+		data.Events = append(data.Events, event)
+	}
+	return data, rows.Err()
 }
 
 func (s *Store) JournalMode(ctx context.Context) (string, error) {

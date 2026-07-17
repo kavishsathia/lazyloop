@@ -39,16 +39,19 @@ func installHooks(path, executable string) error {
 		configuration["hooks"] = hooks
 	}
 	command := strconv.Quote(executable) + " hook"
-	for _, event := range []string{"PreToolUse", "PostToolUse"} {
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop", "Stop"} {
 		groups, _ := hooks[event].([]any)
 		if !hasCommand(groups, command) {
-			groups = append(groups, map[string]any{
-				"matcher": "*",
+			group := map[string]any{
 				"hooks": []any{map[string]any{
 					"type": "command", "command": command, "timeout": 30,
 					"statusMessage": "Hamster is checking loop state",
 				}},
-			})
+			}
+			if event == "PreToolUse" || event == "PostToolUse" {
+				group["matcher"] = "*"
+			}
+			groups = append(groups, group)
 		}
 		hooks[event] = groups
 	}

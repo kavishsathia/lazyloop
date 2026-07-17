@@ -14,9 +14,11 @@ import (
 
 	"hamster/internal/control"
 	"hamster/internal/daemon"
+	"hamster/internal/hook"
 	"hamster/internal/hookclient"
 	"hamster/internal/project"
 	"hamster/internal/store"
+	"hamster/internal/trace"
 	"hamster/internal/version"
 )
 
@@ -50,9 +52,238 @@ func run(ctx context.Context, arguments []string) error {
 		return statusCommand(ctx, arguments[1:])
 	case "inspect":
 		return inspectCommand(arguments[1:])
+	case "trace":
+		return traceCommand(ctx, arguments[1:])
 	default:
 		return usageError()
 	}
+}
+
+func traceCommand(ctx context.Context, arguments []string) error {
+	if len(arguments) == 0 {
+		return errors.New("usage: hamster trace <record|stop|export|import|replay>")
+	}
+	switch arguments[0] {
+	case "record":
+		return traceRecordCommand(ctx, arguments[1:])
+	case "stop":
+		return traceStopCommand(ctx, arguments[1:])
+	case "export":
+		return traceExportCommand(ctx, arguments[1:])
+	case "import":
+		return traceImportCommand(arguments[1:])
+	case "replay":
+		return traceReplayCommand(arguments[1:])
+	default:
+		return errors.New("usage: hamster trace <record|stop|export|import|replay>")
+	}
+}
+
+func traceRecordCommand(ctx context.Context, arguments []string) error {
+	flags := flag.NewFlagSet("trace record", flag.ContinueOnError)
+	name := flags.String("name", "", "scenario name")
+	distribution := flags.String("codex-distribution", "codex-cli", "Codex distribution")
+	versionFlag := flags.String("codex-version", "", "exact Codex version")
+	session := flags.String("session", "", "Codex session filter for explicit recording")
+	homeFlag := flags.String("home", "", "user home directory")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if *session == "" {
+		fmt.Println("Hamster trace recording is registered by the Codex pre-tool hook.")
+		return nil
+	}
+	if *name == "" || *versionFlag == "" {
+		return errors.New("trace record requires --name and --codex-version")
+	}
+	client, err := traceDaemonClient(ctx, *homeFlag)
+	if err != nil {
+		return err
+	}
+	var started store.Trace
+	err = client.Call(ctx, requestID(), "trace.start", map[string]string{
+		"name": *name, "codex_distribution": *distribution, "codex_version": *versionFlag, "session_filter": *session,
+	}, &started)
+	if err != nil {
+		return err
+	}
+	return printJSON(started)
+}
+
+func traceStopCommand(ctx context.Context, arguments []string) error {
+	flags := flag.NewFlagSet("trace stop", flag.ContinueOnError)
+	traceID := flags.String("id", "", "trace ID for explicit stopping")
+	homeFlag := flags.String("home", "", "user home directory")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if *traceID == "" {
+		fmt.Println("Hamster trace stopping is handled by the Codex pre-tool hook. Outside Codex, pass --id.")
+		return nil
+	}
+	client, err := traceDaemonClient(ctx, *homeFlag)
+	if err != nil {
+		return err
+	}
+	var stopped store.Trace
+	if err := client.Call(ctx, requestID(), "trace.stop", map[string]string{"trace_id": *traceID}, &stopped); err != nil {
+		return err
+	}
+	return printJSON(stopped)
+}
+
+func traceExportCommand(ctx context.Context, arguments []string) error {
+	flags := flag.NewFlagSet("trace export", flag.ContinueOnError)
+	traceID := flags.String("id", "", "trace ID")
+	output := flags.String("output", "testdata/traces", "versioned trace root")
+	homeFlag := flags.String("home", "", "user home directory")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if *traceID == "" {
+		return errors.New("trace export requires --id")
+	}
+	client, err := traceDaemonClient(ctx, *homeFlag)
+	if err != nil {
+		return err
+	}
+	var data store.TraceData
+	if err := client.Call(ctx, requestID(), "trace.get", map[string]string{"trace_id": *traceID}, &data); err != nil {
+		return err
+	}
+	fixture, err := fixtureFromTraceData(data)
+	if err != nil {
+		return err
+	}
+	directory := filepath.Join(*output, data.Trace.CodexDistribution+"-"+data.Trace.CodexVersion, data.Trace.Name)
+	if err := trace.Write(directory, fixture); err != nil {
+		return err
+	}
+	fmt.Println(directory)
+	return nil
+}
+
+func traceImportCommand(arguments []string) error {
+	flags := flag.NewFlagSet("trace import", flag.ContinueOnError)
+	input := flags.String("input", "", "legacy JSONL capture")
+	session := flags.String("session", "", "session ID to import")
+	name := flags.String("name", "", "fixture name")
+	scenario := flags.String("scenario", "", "scenario description")
+	distribution := flags.String("codex-distribution", "codex-cli", "Codex distribution")
+	versionFlag := flags.String("codex-version", "", "exact Codex version")
+	output := flags.String("output", "testdata/traces", "versioned trace root")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if *input == "" || *session == "" || *name == "" || *versionFlag == "" {
+		return errors.New("trace import requires --input, --session, --name, and --codex-version")
+	}
+	file, err := os.Open(*input)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	fixture, err := trace.ImportLegacy(file, *session, trace.Manifest{
+		Name: *name, Scenario: *scenario, CodexDistribution: *distribution, CodexVersion: *versionFlag,
+	})
+	if err != nil {
+		return err
+	}
+	report, err := trace.Replay(fixture)
+	if err != nil {
+		return err
+	}
+	fixture.Manifest.Capabilities = trace.Capabilities(report)
+	directory := filepath.Join(*output, *distribution+"-"+*versionFlag, *name)
+	if err := trace.Write(directory, *fixture); err != nil {
+		return err
+	}
+	fmt.Println(directory)
+	return nil
+}
+
+func traceReplayCommand(arguments []string) error {
+	if len(arguments) != 1 {
+		return errors.New("usage: hamster trace replay FIXTURE_DIRECTORY")
+	}
+	fixture, err := trace.Load(arguments[0])
+	if err != nil {
+		return err
+	}
+	report, err := trace.Replay(fixture)
+	if err != nil {
+		return err
+	}
+	return printJSON(report)
+}
+
+func fixtureFromTraceData(data store.TraceData) (trace.Fixture, error) {
+	redactor := trace.NewRedactor()
+	fixture := trace.Fixture{Manifest: trace.Manifest{
+		Schema: trace.SchemaVersion, Name: data.Trace.Name, Scenario: data.Trace.Name, Source: "live",
+		CodexDistribution: data.Trace.CodexDistribution, CodexVersion: data.Trace.CodexVersion,
+		RecordedAt: data.Trace.StartedAt, Sanitized: true,
+	}}
+	for _, row := range data.Events {
+		input, err := redactor.Redact(row.Input)
+		if err != nil {
+			return trace.Fixture{}, err
+		}
+		record := trace.Record{Sequence: row.Sequence, ElapsedMS: row.ElapsedMS, Input: input}
+		if len(row.Decision) > 0 {
+			decisionPayload, err := redactor.Redact(row.Decision)
+			if err != nil {
+				return trace.Fixture{}, err
+			}
+			var decision hook.Decision
+			if err := json.Unmarshal(decisionPayload, &decision); err != nil {
+				return trace.Fixture{}, err
+			}
+			record.Decision = &decision
+			fixture.Manifest.HasDecisions = true
+		}
+		if len(row.StateBefore) > 0 {
+			state, err := redactSnapshot(redactor, row.StateBefore)
+			if err != nil {
+				return trace.Fixture{}, err
+			}
+			record.StateBefore = state
+			fixture.Manifest.HasState = true
+		}
+		if len(row.StateAfter) > 0 {
+			state, err := redactSnapshot(redactor, row.StateAfter)
+			if err != nil {
+				return trace.Fixture{}, err
+			}
+			record.StateAfter = state
+			fixture.Manifest.HasState = true
+		}
+		fixture.Records = append(fixture.Records, record)
+	}
+	report, err := trace.Replay(&fixture)
+	if err != nil {
+		return trace.Fixture{}, err
+	}
+	fixture.Manifest.Capabilities = trace.Capabilities(report)
+	return fixture, nil
+}
+
+func redactSnapshot(redactor *trace.Redactor, payload json.RawMessage) (*trace.StateSnapshot, error) {
+	sanitized, err := redactor.Redact(payload)
+	if err != nil {
+		return nil, err
+	}
+	var snapshot trace.StateSnapshot
+	err = json.Unmarshal(sanitized, &snapshot)
+	return &snapshot, err
+}
+
+func traceDaemonClient(ctx context.Context, homeFlag string) (daemon.Client, error) {
+	home, err := resolveHome(homeFlag)
+	if err != nil {
+		return daemon.Client{}, err
+	}
+	return daemonClient(ctx, home)
 }
 
 func initProject(arguments []string) error {
@@ -281,5 +512,5 @@ func requestID() string {
 }
 
 func usageError() error {
-	return errors.New("usage: hamster <init|run|status|inspect|hook|daemon|version>")
+	return errors.New("usage: hamster <init|run|status|inspect|trace|hook|daemon|version>")
 }

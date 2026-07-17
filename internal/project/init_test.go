@@ -31,7 +31,7 @@ func TestInitCreatesAndMergesHookConfiguration(t *testing.T) {
 		t.Fatal("custom configuration was not preserved")
 	}
 	hooks := configuration["hooks"].(map[string]any)
-	if len(hooks["PreToolUse"].([]any)) != 1 || len(hooks["PostToolUse"].([]any)) != 1 || hooks["Stop"] == nil {
+	if len(hooks["PreToolUse"].([]any)) != 1 || len(hooks["PostToolUse"].([]any)) != 1 || len(hooks["Stop"].([]any)) != 2 || hooks["SubagentStart"] == nil {
 		t.Fatalf("hooks = %#v", hooks)
 	}
 }
