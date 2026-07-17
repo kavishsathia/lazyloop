@@ -17,6 +17,9 @@ type ReplayReport struct {
 	PairedCalls   int            `json:"paired_calls"`
 	UnmatchedPre  int            `json:"unmatched_pre"`
 	UnmatchedPost int            `json:"unmatched_post"`
+	Decisions     int            `json:"decisions"`
+	StateChanges  int            `json:"state_changes"`
+	Verifications int            `json:"verifications"`
 	EventKinds    map[string]int `json:"event_kinds"`
 	Tools         map[string]int `json:"tools"`
 }
@@ -25,6 +28,7 @@ func Replay(fixture *Fixture) (ReplayReport, error) {
 	report := ReplayReport{Schema: fixture.Manifest.Schema, CodexVersion: fixture.Manifest.CodexVersion, EventKinds: map[string]int{}, Tools: map[string]int{}}
 	sessions, agents := map[string]struct{}{}, map[string]struct{}{}
 	pending := map[string]int{}
+	lastState := map[string]StateSnapshot{}
 	previousElapsed := int64(-1)
 	for index, record := range fixture.Records {
 		if record.Sequence != index+1 {
@@ -40,6 +44,29 @@ func Replay(fixture *Fixture) (ReplayReport, error) {
 		}
 		if event.EventName == "" || event.SessionID == "" {
 			return report, fmt.Errorf("event %d is missing hook identity", record.Sequence)
+		}
+		if record.Decision != nil {
+			if record.Decision.Permission != "allow" && record.Decision.Permission != "deny" {
+				return report, fmt.Errorf("event %d has invalid decision %q", record.Sequence, record.Decision.Permission)
+			}
+			report.Decisions++
+		}
+		if record.StateBefore != nil {
+			if previous, exists := lastState[record.StateBefore.RunID]; exists && !sameState(previous, *record.StateBefore) {
+				return report, fmt.Errorf("event %d state_before does not continue run %s", record.Sequence, record.StateBefore.RunID)
+			}
+		}
+		if record.StateAfter != nil {
+			if record.StateBefore != nil && !sameState(*record.StateBefore, *record.StateAfter) {
+				report.StateChanges++
+			}
+			lastState[record.StateAfter.RunID] = *record.StateAfter
+		}
+		for _, verification := range record.Verifications {
+			if verification.Name == "" {
+				return report, fmt.Errorf("event %d has an unnamed verification", record.Sequence)
+			}
+			report.Verifications++
 		}
 		report.Events++
 		report.EventKinds[event.EventName]++
@@ -66,6 +93,11 @@ func Replay(fixture *Fixture) (ReplayReport, error) {
 	}
 	report.Sessions, report.Agents = len(sessions), len(agents)
 	return report, nil
+}
+
+func sameState(left, right StateSnapshot) bool {
+	return left.RunID == right.RunID && left.ProcessID == right.ProcessID && left.MachineID == right.MachineID &&
+		left.StateID == right.StateID && left.Status == right.Status && left.Iteration == right.Iteration && left.StackDepth == right.StackDepth
 }
 
 func Capabilities(report ReplayReport) []string {

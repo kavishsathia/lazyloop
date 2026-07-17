@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"hamster/internal/hook"
 )
 
 func TestRedactorKeepsIdentityRelationships(t *testing.T) {
@@ -46,5 +48,22 @@ func TestRedactorRemovesDelegatedPromptsAndLargeOutputs(t *testing.T) {
 	}
 	if bytes.Contains(payload, []byte("private task")) || bytes.Contains(payload, []byte("large result")) || bytes.Contains(payload, []byte(`"secret"`)) {
 		t.Fatalf("sensitive payload survived: %s", payload)
+	}
+}
+
+func TestReplayValidatesDecisionsStateAndVerifiers(t *testing.T) {
+	before := &StateSnapshot{RunID: "run-1", ProcessID: "process-1", MachineID: "machine-1", StateID: "state-0", Status: "running"}
+	after := &StateSnapshot{RunID: "run-1", ProcessID: "process-1", MachineID: "machine-1", StateID: "state-1", Status: "complete"}
+	fixture := &Fixture{Manifest: Manifest{Schema: SchemaVersion, CodexVersion: "1"}, Records: []Record{{
+		Sequence: 1, Input: json.RawMessage(`{"session_id":"session-1","hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"tool-1"}`),
+		Decision: &hook.Decision{Permission: "allow"}, StateBefore: before, StateAfter: after,
+		Verifications: []Verification{{Name: "tests", Command: "go test ./...", Passed: true}},
+	}}}
+	report, err := Replay(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Decisions != 1 || report.StateChanges != 1 || report.Verifications != 1 {
+		t.Fatalf("report = %#v", report)
 	}
 }

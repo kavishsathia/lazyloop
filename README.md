@@ -45,3 +45,33 @@ prospective time and attempt limits, `allow`/`disallow`, exact `bash.run`
 steps, and independent `bash.check` verifiers. Native provider integrations
 and fork/exec/wait are intentionally left for Hamster-supervised follow-up
 work.
+
+## Codex trace fixtures
+
+Hamster can record the hook stream directly from Codex. Inside a Codex session:
+
+```sh
+hamster trace record --name parallel-provider-build
+# exercise the workflow
+hamster trace stop
+hamster trace export --id <trace-id> --output testdata/traces
+```
+
+The pre-tool hook supplies the session identity and detects the exact installed
+Codex version. Exports are sanitized and automatically organized as:
+
+```text
+testdata/traces/<codex-distribution>-<exact-version>/<scenario>/
+```
+
+Replay a fixture without launching Codex:
+
+```sh
+hamster trace replay testdata/traces/codex-cli-0.144.5/parallel-subagents
+```
+
+The committed `codex-cli 0.144.5` corpus covers parallel subagents, a nested
+subagent, native web search, shell calls, spawn/wait operations, lifecycle
+events, and stable parent/child identities. Runtime replay uses an injectable
+clock and queued verifier results, so tests do not sleep or execute captured
+commands.
