@@ -1,6 +1,24 @@
 .DS_Store
+
+# Local Hamster runtime state
 .hamster/hamster.db*
 .hamster/run/
+
+# Go build and profiling output
 bin/
 coverage.out
+*.test
+*.prof
 
+# JavaScript dependencies and package-manager caches
+node_modules/
+.pnpm-store/
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example

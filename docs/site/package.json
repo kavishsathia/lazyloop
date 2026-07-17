@@ -2,6 +2,11 @@
   "name": "@hamster/docs",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "engines": {
+    "node": ">=22.12.0",
+    "pnpm": ">=10.0.0"
+  },
   "scripts": {
     "generate": "node scripts/generate-reference.mjs",
     "dev": "pnpm generate && ASTRO_TELEMETRY_DISABLED=1 astro dev",

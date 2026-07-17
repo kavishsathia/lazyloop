@@ -11,9 +11,15 @@ embedded into the Go CLI for `hamster man`. Hand-authored guides live under
 ## Development
 
 ```sh
+nvm install
+nvm use
+corepack enable
 pnpm install
 pnpm dev
 ```
+
+Astro 7 requires Node 22.12 or newer. The checked-in `.nvmrc` selects the
+Node 24.14 release used to validate this project.
 
 ## Production build
 
