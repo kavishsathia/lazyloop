@@ -132,6 +132,15 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 		if err = json.Unmarshal(request.Params, &params); err == nil {
 			result, err = s.store.FindCurrentRun(ctx, params.SessionID, params.AgentID)
 		}
+	case "run.kill":
+		var params struct {
+			SessionID string `json:"session_id"`
+			AgentID   string `json:"agent_id,omitempty"`
+			Reason    string `json:"reason,omitempty"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.KillCurrentRun(ctx, params.SessionID, params.AgentID, params.Reason)
+		}
 	case "trace.start":
 		var params struct {
 			Name              string `json:"name"`

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -80,5 +81,59 @@ func TestHookHandlingCapturesActiveTrace(t *testing.T) {
 	}
 	if len(data.Events) != 1 || string(data.Events[0].Input) != string(raw) || len(data.Events[0].Decision) == 0 {
 		t.Fatalf("captured events = %#v", data.Events)
+	}
+}
+
+func TestKillControlCommandEscapesActiveRun(t *testing.T) {
+	state, err := store.Open(filepath.Join(t.TempDir(), "hamster.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	machine := ir.Machine{ID: "machine_kill", Name: "wheel", Kind: ir.LoopGoal, InitialState: "state_work", States: []ir.State{{ID: "state_work", Kind: ir.StateAgentWork}}}
+	run, err := state.CreateRun(context.Background(), store.CreateRunParams{WorkspaceRoot: "/repo", CodexSessionID: "session-kill", Machine: machine})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(state)
+	event := hook.Event{
+		SessionID: "session-kill", EventName: "PreToolUse", ToolName: "Bash", ToolUseID: "kill-tool", WorkspaceRoot: "/repo",
+		ToolInput: json.RawMessage(`{"command":"hamster kill --reason 'repair runtime'"}`),
+	}
+	params, _ := json.Marshal(hook.HookRequest{Event: event})
+	response := server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "kill-hook", Method: "hook.event", Params: params})
+	if response.Error != nil {
+		t.Fatalf("kill hook error = %#v", response.Error)
+	}
+	var decision hook.Decision
+	if err := json.Unmarshal(response.Result, &decision); err != nil {
+		t.Fatal(err)
+	}
+	if decision.Permission != "allow" || !decision.Tracked || decision.RunID != run.ID {
+		t.Fatalf("kill decision = %#v", decision)
+	}
+	killed, err := state.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if killed.Status != "killed" || killed.TerminationReason != "repair runtime" {
+		t.Fatalf("killed run = %#v", killed)
+	}
+	if _, err := state.FindCurrentRun(context.Background(), "session-kill", ""); err != sql.ErrNoRows {
+		t.Fatalf("current run error = %v, want sql.ErrNoRows", err)
+	}
+
+	event.ToolUseID = "after-kill"
+	event.ToolInput = json.RawMessage(`{"command":"go test ./..."}`)
+	params, _ = json.Marshal(hook.HookRequest{Event: event})
+	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "after-kill-hook", Method: "hook.event", Params: params})
+	if response.Error != nil {
+		t.Fatalf("post-kill hook error = %#v", response.Error)
+	}
+	if err := json.Unmarshal(response.Result, &decision); err != nil {
+		t.Fatal(err)
+	}
+	if decision.Permission != "allow" || decision.Tracked {
+		t.Fatalf("post-kill decision = %#v", decision)
 	}
 }

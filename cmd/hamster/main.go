@@ -48,6 +48,8 @@ func run(ctx context.Context, arguments []string) error {
 		return hookCommand(ctx)
 	case "run":
 		return runCommand(ctx, arguments[1:])
+	case "kill":
+		return killCommand(ctx, arguments[1:])
 	case "status":
 		return statusCommand(ctx, arguments[1:])
 	case "inspect":
@@ -444,6 +446,36 @@ func statusCommand(ctx context.Context, arguments []string) error {
 	return printRunSummary(current)
 }
 
+func killCommand(ctx context.Context, arguments []string) error {
+	flags := flag.NewFlagSet("kill", flag.ContinueOnError)
+	session := flags.String("session", "", "Codex session ID for an explicit kill")
+	agent := flags.String("agent", "", "Codex agent ID")
+	reason := flags.String("reason", "emergency kill switch", "reason recorded with the killed run")
+	homeFlag := flags.String("home", "", "user home directory")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if *session == "" {
+		fmt.Println("Hamster kill is handled by the Codex pre-tool hook. Outside Codex, pass --session.")
+		return nil
+	}
+	home, err := resolveHome(*homeFlag)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, home)
+	if err != nil {
+		return err
+	}
+	var killed store.Run
+	if err := client.Call(ctx, requestID(), "run.kill", map[string]string{
+		"session_id": *session, "agent_id": *agent, "reason": *reason,
+	}, &killed); err != nil {
+		return err
+	}
+	return printRunSummary(killed)
+}
+
 func inspectCommand(arguments []string) error {
 	flags := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	entry := flags.String("entry", "", "named loop")
@@ -513,6 +545,7 @@ func printRunSummary(run store.Run) error {
 	return printJSON(map[string]any{
 		"run_id": run.ID, "status": run.Status, "machine": machine,
 		"state": run.StateID, "iteration": run.Iteration, "stack_depth": len(run.Stack), "result": run.Result,
+		"termination_reason": run.TerminationReason,
 	})
 }
 
@@ -521,5 +554,5 @@ func requestID() string {
 }
 
 func usageError() error {
-	return errors.New("usage: hamster <init|run|status|inspect|trace|hook|daemon|version>")
+	return errors.New("usage: hamster <init|run|kill|status|inspect|trace|hook|daemon|version>")
 }

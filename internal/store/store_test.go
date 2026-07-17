@@ -58,6 +58,29 @@ func TestCreateAndResolveRootRun(t *testing.T) {
 	}
 }
 
+func TestKillCurrentRunTerminatesAndUnbinds(t *testing.T) {
+	state := testStore(t)
+	run, err := state.CreateRun(context.Background(), CreateRunParams{
+		WorkspaceRoot: "/repo", CodexSessionID: "session-kill", Machine: testMachine(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	killed, err := state.KillCurrentRun(context.Background(), "session-kill", "", "repair Hamster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if killed.ID != run.ID || killed.Status != "killed" || killed.TerminationReason != "repair Hamster" {
+		t.Fatalf("killed run = %#v", killed)
+	}
+	if _, err := state.FindCurrentRun(context.Background(), "session-kill", ""); err != sql.ErrNoRows {
+		t.Fatalf("FindCurrentRun() error = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := state.KillCurrentRun(context.Background(), "session-kill", "", "again"); err != sql.ErrNoRows {
+		t.Fatalf("repeated KillCurrentRun() error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestRecordEventIsIdempotent(t *testing.T) {
 	store := testStore(t)
 	first := EventDecision{Decision: "allow", Reason: "first"}

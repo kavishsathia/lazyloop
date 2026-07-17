@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS runs (
   variables_json BLOB NOT NULL DEFAULT '{}',
   stack_json BLOB NOT NULL DEFAULT '[]',
   result_json BLOB,
+  termination_reason TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -162,7 +163,10 @@ CREATE INDEX IF NOT EXISTS trace_events_trace_id ON trace_events(trace_id, seque
 	if err := s.ensureColumn(ctx, "trace_events", "verification_json", `ALTER TABLE trace_events ADD COLUMN verification_json BLOB`); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 4`); err != nil {
+	if err := s.ensureColumn(ctx, "runs", "termination_reason", `ALTER TABLE runs ADD COLUMN termination_reason TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 5`); err != nil {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	return nil
@@ -208,20 +212,21 @@ type CreateRunParams struct {
 }
 
 type Run struct {
-	ID            string          `json:"id"`
-	ProcessID     string          `json:"process_id"`
-	ParentRunID   string          `json:"parent_run_id,omitempty"`
-	MachineName   string          `json:"machine_name,omitempty"`
-	Machine       ir.Machine      `json:"machine"`
-	StateID       string          `json:"state_id"`
-	Status        string          `json:"status"`
-	Iteration     int             `json:"iteration"`
-	Variables     json.RawMessage `json:"variables"`
-	Stack         []Frame         `json:"stack"`
-	Result        json.RawMessage `json:"result,omitempty"`
-	WorkspaceRoot string          `json:"workspace_root"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
+	ID                string          `json:"id"`
+	ProcessID         string          `json:"process_id"`
+	ParentRunID       string          `json:"parent_run_id,omitempty"`
+	MachineName       string          `json:"machine_name,omitempty"`
+	Machine           ir.Machine      `json:"machine"`
+	StateID           string          `json:"state_id"`
+	Status            string          `json:"status"`
+	Iteration         int             `json:"iteration"`
+	Variables         json.RawMessage `json:"variables"`
+	Stack             []Frame         `json:"stack"`
+	Result            json.RawMessage `json:"result,omitempty"`
+	TerminationReason string          `json:"termination_reason,omitempty"`
+	WorkspaceRoot     string          `json:"workspace_root"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
 type Frame struct {
@@ -293,7 +298,7 @@ VALUES(?, ?, NULLIF(?, ''), ?, ?, ?, 'running', ?, ?)`, runID, processID, params
 
 func (s *Store) GetRun(ctx context.Context, runID string) (*Run, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT r.id, r.process_id, COALESCE(r.parent_run_id, ''), COALESCE(r.machine_name, ''), r.machine_json,
-r.state_id, r.status, r.iteration, r.variables_json, r.stack_json, r.result_json, r.created_at, r.updated_at, w.root
+r.state_id, r.status, r.iteration, r.variables_json, r.stack_json, r.result_json, r.termination_reason, r.created_at, r.updated_at, w.root
 FROM runs r JOIN processes p ON p.id=r.process_id JOIN sessions s ON s.id=p.session_id JOIN workspaces w ON w.id=s.workspace_id
 WHERE r.id = ?`, runID)
 	return scanRun(row)
@@ -304,13 +309,69 @@ func (s *Store) FindCurrentRun(ctx context.Context, codexSessionID, agentID stri
 		agentID = RootAgent
 	}
 	row := s.db.QueryRowContext(ctx, `SELECT r.id, r.process_id, COALESCE(r.parent_run_id, ''), COALESCE(r.machine_name, ''), r.machine_json,
-	r.state_id, r.status, r.iteration, r.variables_json, r.stack_json, r.result_json, r.created_at, r.updated_at, w.root
+	r.state_id, r.status, r.iteration, r.variables_json, r.stack_json, r.result_json, r.termination_reason, r.created_at, r.updated_at, w.root
 FROM runs r
 JOIN processes p ON p.current_run_id = r.id
 JOIN sessions s ON s.id = p.session_id
 JOIN workspaces w ON w.id = s.workspace_id
 WHERE s.codex_session_id = ? AND p.agent_id = ?`, codexSessionID, agentID)
 	return scanRun(row)
+}
+
+// KillCurrentRun is the emergency escape hatch for a Codex agent. It marks a
+// running machine as killed and always removes the process binding in the same
+// transaction, so later tool calls are no longer governed by that machine.
+func (s *Store) KillCurrentRun(ctx context.Context, codexSessionID, agentID, reason string) (*Run, error) {
+	if agentID == "" {
+		agentID = RootAgent
+	}
+	if reason == "" {
+		reason = "emergency kill switch"
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var runID, status string
+	err = tx.QueryRowContext(ctx, `SELECT r.id, r.status
+FROM runs r
+JOIN processes p ON p.current_run_id = r.id
+JOIN sessions s ON s.id = p.session_id
+WHERE s.codex_session_id = ? AND p.agent_id = ?`, codexSessionID, agentID).Scan(&runID, &status)
+	if err != nil {
+		return nil, err
+	}
+	now := formatTime(time.Now().UTC())
+	if status == "running" {
+		result, updateErr := tx.ExecContext(ctx, `UPDATE runs SET status='killed', termination_reason=?, updated_at=? WHERE id=? AND status='running'`, reason, now, runID)
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		changed, updateErr := result.RowsAffected()
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		if changed != 1 {
+			return nil, errors.New("run changed concurrently")
+		}
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE processes SET current_run_id=NULL, updated_at=? WHERE current_run_id=?`, now, runID)
+	if err != nil {
+		return nil, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if changed != 1 {
+		return nil, errors.New("run binding changed concurrently")
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetRun(ctx, runID)
 }
 
 type scanner interface {
@@ -325,7 +386,7 @@ func scanRun(row scanner) (*Run, error) {
 	var result []byte
 	var createdAt, updatedAt string
 	if err := row.Scan(&run.ID, &run.ProcessID, &run.ParentRunID, &run.MachineName, &machineJSON,
-		&run.StateID, &run.Status, &run.Iteration, &variables, &stack, &result, &createdAt, &updatedAt, &run.WorkspaceRoot); err != nil {
+		&run.StateID, &run.Status, &run.Iteration, &variables, &stack, &result, &run.TerminationReason, &createdAt, &updatedAt, &run.WorkspaceRoot); err != nil {
 		return nil, err
 	}
 	run.Variables = json.RawMessage(variables)
@@ -356,9 +417,9 @@ func (s *Store) UpdateRun(ctx context.Context, expectedState string, run *Run) e
 		return err
 	}
 	result, err := s.db.ExecContext(ctx, `UPDATE runs SET machine_name=?, machine_json=?, state_id=?, status=?, iteration=?,
-variables_json=?, stack_json=?, result_json=?, updated_at=? WHERE id=? AND state_id=?`,
+variables_json=?, stack_json=?, result_json=?, termination_reason=?, updated_at=? WHERE id=? AND state_id=?`,
 		run.Machine.Name, machineJSON, run.StateID, run.Status, run.Iteration, []byte(run.Variables), stackJSON,
-		[]byte(run.Result), formatTime(time.Now().UTC()), run.ID, expectedState)
+		[]byte(run.Result), run.TerminationReason, formatTime(time.Now().UTC()), run.ID, expectedState)
 	if err != nil {
 		return err
 	}
@@ -403,9 +464,9 @@ VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO NOTHING`, requestID, run.ID,
 		return false, err
 	}
 	result, err = tx.ExecContext(ctx, `UPDATE runs SET machine_name=?, machine_json=?, state_id=?, status=?, iteration=?,
-variables_json=?, stack_json=?, result_json=?, updated_at=? WHERE id=? AND state_id=?`,
+variables_json=?, stack_json=?, result_json=?, termination_reason=?, updated_at=? WHERE id=? AND state_id=?`,
 		run.Machine.Name, machineJSON, run.StateID, run.Status, run.Iteration, []byte(run.Variables), stackJSON,
-		[]byte(run.Result), formatTime(time.Now().UTC()), run.ID, expectedState)
+		[]byte(run.Result), run.TerminationReason, formatTime(time.Now().UTC()), run.ID, expectedState)
 	if err != nil {
 		return false, err
 	}

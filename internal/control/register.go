@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,6 +18,9 @@ import (
 )
 
 func RegisterFromHook(ctx context.Context, state *store.Store, runner *hamsterruntime.Runner, event hook.Event, command Command) (hook.Decision, error) {
+	if command.Name == "kill" {
+		return handleKillCommand(ctx, state, event, command.Args)
+	}
 	if command.Name == "trace" {
 		return handleTraceCommand(ctx, state, event, command.Args)
 	}
@@ -51,6 +55,28 @@ func RegisterFromHook(ctx context.Context, state *store.Store, runner *hamsterru
 	return hook.Decision{
 		Permission: "allow", Tracked: true, RunID: run.ID,
 		Context: fmt.Sprintf("Hamster started run %s for %s at state %s. Follow this loop until Hamster reports completion or escalation.", run.ID, machineLabel(machine), run.StateID),
+	}, nil
+}
+
+func handleKillCommand(ctx context.Context, state *store.Store, event hook.Event, arguments []string) (hook.Decision, error) {
+	reason := "emergency kill switch"
+	for index := 0; index < len(arguments); index++ {
+		if arguments[index] != "--reason" || index+1 >= len(arguments) {
+			return hook.Decision{Permission: "deny", Reason: "usage: hamster kill [--reason TEXT]", Remediation: "Run the kill command by itself; do not combine it with another shell command."}, nil
+		}
+		index++
+		reason = arguments[index]
+	}
+	killed, err := state.KillCurrentRun(ctx, event.SessionID, event.AgentID, reason)
+	if err == sql.ErrNoRows {
+		return hook.Decision{Permission: "allow", Context: "Hamster kill switch is clear; no run is bound to this Codex agent."}, nil
+	}
+	if err != nil {
+		return hook.Decision{}, err
+	}
+	return hook.Decision{
+		Permission: "allow", Tracked: true, RunID: killed.ID,
+		Context: fmt.Sprintf("Hamster killed and unbound run %s. Tool calls are no longer governed by that run. Reason: %s", killed.ID, killed.TerminationReason),
 	}, nil
 }
 

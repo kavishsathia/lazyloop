@@ -31,6 +31,18 @@ hamster run build-provider
 hamster status
 ```
 
+If a loop is preventing work needed to repair Hamster itself, use the
+high-priority emergency brake:
+
+```sh
+hamster kill --reason "repair Hamster runtime"
+```
+
+The pre-tool hook handles `kill` before normal loop policy. It persistently
+marks the bound run as killed and removes the current agent binding, so later
+tool calls are no longer governed by that run. Outside Codex, identify the
+binding explicitly with `hamster kill --session <session-id>`.
+
 The pre-tool hook owns registration because it already has the Codex session
 and agent identity. For local testing outside Codex, bind explicitly:
 
