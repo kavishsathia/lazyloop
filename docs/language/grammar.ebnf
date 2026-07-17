@@ -1,0 +1,22 @@
+program        = { loop } ;
+loop           = goal | flow | foreach ;
+goal           = "goal" [ identifier ] "{" { goal-statement } "}" ;
+flow           = "flow" [ identifier ] "{" { flow-statement } "}" ;
+foreach        = "foreach" [ identifier ] identifier "in" expression
+                 "{" loop "}" ;
+goal-statement = verify | limit | policy | return ;
+flow-statement = step | verify | limit | policy | return ;
+step           = "step" identifier "=" ( expression | loop ) ";" ;
+verify         = "verify" identifier "=" expression ";" ;
+limit          = "limit" identifier expression ";" ;
+policy         = ( "allow" | "disallow" ) expression ";" ;
+return         = "return" expression ";" ;
+expression     = primary { operator primary } ;
+primary        = identifier | string | number | boolean | list | call | member
+               | "(" expression ")" | "!" primary ;
+list           = "[" [ expression { "," expression } ] "]" ;
+call           = primary "(" [ argument { "," argument } ] ")" ;
+argument       = [ identifier ":" ] expression ;
+member         = primary "." identifier ;
+operator       = "||" | "&&" | "==" | "!=" | "<" | "<=" | ">" | ">=" ;
+boolean        = "true" | "false" ;

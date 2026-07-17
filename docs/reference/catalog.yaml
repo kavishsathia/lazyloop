@@ -1,0 +1,505 @@
+schema: hamster.reference/v1alpha1
+entries:
+  - id: loop.goal
+    title: Goal loop
+    kind: loop
+    aliases: [goal]
+    keywords: [goal]
+    since: 0.1.0
+    stability: experimental
+    summary: Repeats agent work until every verifier passes or an active limit terminates the run.
+    syntax: ['goal [name] { goal-statement* }']
+    semantics:
+      - Policies and limits activate in source order before agent work begins.
+      - The runtime executes every verifier; failure returns control to the next iteration.
+    postconditions:
+      - predicate: every verify is true
+        description: Normal completion requires all declared verifiers to pass in one boundary evaluation.
+        guarantee: enforced
+        evidence: persisted verifier results
+    failures:
+      - code: limit_exceeded
+        when: An active time or attempt limit is exhausted.
+        remediation: Increase the bound or inspect the failing verifier.
+    examples:
+      - title: Make tests pass
+        language: hamster
+        test: parse
+        source: |
+          goal tests_pass {
+            limit attempts 8;
+            verify tests = bash.check("go test ./...");
+            return "green";
+          }
+    related: [statement.verify, statement.limit, loop.flow]
+
+  - id: loop.flow
+    title: Flow loop
+    kind: loop
+    aliases: [flow]
+    keywords: [flow]
+    since: 0.1.0
+    stability: experimental
+    summary: Repeats an ordered sequence of agent-owned steps until the flow verifiers pass.
+    syntax: ['flow [name] { flow-statement* }']
+    semantics:
+      - Steps execute in source order and may contain expressions or nested loops.
+      - A failed flow boundary restarts the flow subject to active limits.
+    postconditions:
+      - predicate: every verify is true
+        description: The flow only completes normally after all flow-level verifiers pass.
+        guarantee: enforced
+        evidence: persisted verifier results at the iteration boundary
+    examples:
+      - title: Branch, repair, and verify
+        language: hamster
+        test: parse
+        source: |
+          flow repair {
+            step branch = bash.run("git switch -c repair");
+            step fix = goal {
+              verify tests = bash.check("go test ./...");
+              return "fixed";
+            };
+            verify clean = bash.check("git diff --check");
+            return fix;
+          }
+    related: [statement.step, loop.goal, loop.foreach]
+
+  - id: loop.foreach
+    title: Foreach loop
+    kind: loop
+    aliases: [foreach]
+    keywords: [foreach, in]
+    since: 0.1.0
+    stability: experimental
+    summary: Runs one goal, flow, or nested foreach to completion for every value in a sequence.
+    syntax: ['foreach [name] binding in sequence { loop }']
+    semantics:
+      - Each element receives an independent execution of the inner loop.
+      - The inner return value becomes the result for that element and result order follows input order.
+    preconditions:
+      - predicate: sequence evaluates to a list
+        description: The foreach source must be an enumerable Hamster list.
+        checked: runtime
+    postconditions:
+      - predicate: every element loop completed
+        description: Normal completion means the inner contract passed for every element.
+        guarantee: enforced
+        evidence: one persisted child result per input element
+    examples:
+      - title: Check packages
+        language: hamster
+        test: parse
+        source: |
+          foreach package in ["./internal/store", "./internal/runtime"] {
+            goal {
+              verify tests = bash.check("go test ./...");
+              return package;
+            }
+          }
+    related: [loop.goal, loop.flow, statement.return]
+
+  - id: statement.step
+    title: Step
+    kind: statement
+    aliases: [step]
+    keywords: [step]
+    since: 0.1.0
+    stability: experimental
+    summary: Names one agent-owned operation in an ordered flow.
+    syntax: ['step name = expression;', 'step name = goal|flow|foreach { ... };']
+    semantics:
+      - Steps are legal only inside flow.
+      - Nested loops are themselves steps and must complete before the next step begins.
+    postconditions:
+      - predicate: value is bound to name
+        description: Later statements can reference the step result by its name.
+        guarantee: enforced
+        evidence: machine stack value
+    examples:
+      - title: Exact shell step
+        language: hamster
+        test: parse
+        source: |
+          flow one_step {
+            step status = bash.run("git status --short");
+            verify clean = bash.check("git diff --check");
+            return status;
+          }
+    related: [loop.flow, primitive.bash-run]
+
+  - id: statement.verify
+    title: Verify
+    kind: statement
+    aliases: [verify]
+    keywords: [verify]
+    since: 0.1.0
+    stability: experimental
+    summary: Declares an independently evaluated condition required for normal loop completion.
+    syntax: ['verify name = expression;']
+    semantics:
+      - Verification is runtime-owned rather than agent-owned.
+      - False or errored verification prevents the completion transition.
+    postconditions:
+      - predicate: verifier result and evidence are persisted
+        description: Each evaluation is observable in runtime state and traces.
+        guarantee: enforced
+        evidence: verifier result record
+    examples:
+      - title: Test verifier
+        language: hamster
+        test: parse
+        source: 'goal { verify tests = bash.check("go test ./..."); return true; }'
+    related: [primitive.bash-check, loop.goal, loop.flow]
+
+  - id: statement.limit
+    title: Limit
+    kind: statement
+    aliases: [limit]
+    keywords: [limit]
+    since: 0.1.0
+    stability: experimental
+    summary: Activates a prospective time, cost, or attempt bound from its position in the loop.
+    syntax: ['limit kind expression;']
+    semantics:
+      - A limit starts counting only after execution reaches its clause.
+      - Work completed before the clause does not consume that limit.
+    postconditions:
+      - predicate: exhausted limit terminates the loop
+        description: The runtime refuses another iteration once an active bound is exhausted.
+        guarantee: enforced
+        evidence: persisted activation time and counters
+    examples:
+      - title: Prospective limits
+        language: hamster
+        test: parse
+        source: 'goal { limit time "20m"; limit attempts 5; verify done = true; return true; }'
+    related: [loop.goal, loop.flow]
+
+  - id: statement.allow
+    title: Allow policy
+    kind: statement
+    aliases: [allow]
+    keywords: [allow]
+    since: 0.1.0
+    stability: experimental
+    summary: Defines a tool allowlist policy from this point in a loop.
+    syntax: ['allow expression;']
+    semantics:
+      - Hook-visible calls outside the allowlist are blocked while the policy is active.
+      - Calls that Codex does not expose to hooks cannot be intercepted.
+    postconditions:
+      - predicate: disallowed hook-visible tool calls do not execute
+        description: The pre-tool hook rejects observable calls outside the active allowlist.
+        guarantee: enforced
+        evidence: Codex pre-tool hook decision
+    examples:
+      - title: Restrict tools
+        language: hamster
+        test: parse
+        source: 'goal { allow "bash"; verify done = true; return true; }'
+    related: [statement.disallow]
+
+  - id: statement.disallow
+    title: Disallow policy
+    kind: statement
+    aliases: [disallow]
+    keywords: [disallow]
+    since: 0.1.0
+    stability: experimental
+    summary: Defines a tool blacklist policy from this point in a loop.
+    syntax: ['disallow expression;']
+    semantics:
+      - Matching hook-visible calls are blocked before execution.
+      - Calls absent from the Codex hook stream remain outside enforcement.
+    postconditions:
+      - predicate: matching hook-visible calls do not execute
+        description: The pre-tool hook rejects observable calls matching the blacklist.
+        guarantee: enforced
+        evidence: Codex pre-tool hook decision
+    examples:
+      - title: Block network shell
+        language: hamster
+        test: parse
+        source: 'goal { disallow "curl"; verify done = true; return true; }'
+    related: [statement.allow]
+
+  - id: statement.return
+    title: Return
+    kind: statement
+    aliases: [return]
+    keywords: [return]
+    since: 0.1.0
+    stability: experimental
+    summary: Defines the structured value emitted after a loop completes normally.
+    syntax: ['return expression;']
+    semantics:
+      - Return does not bypass verification; its expression is the loop result after the boundary passes.
+      - A foreach collects one inner return value per element.
+    postconditions:
+      - predicate: result is persisted
+        description: Parent processes and waiters receive the structured result.
+        guarantee: enforced
+        evidence: run result record
+    examples:
+      - title: Return a step
+        language: hamster
+        test: parse
+        source: 'goal { verify done = true; return "complete"; }'
+    related: [loop.foreach, process.wait]
+
+  - id: language.expressions
+    title: Expressions and literals
+    kind: language
+    aliases: [expressions, literals]
+    keywords: [true, false]
+    since: 0.1.0
+    stability: experimental
+    summary: Values, lists, calls, members, named arguments, unary negation, and boolean/comparison operators.
+    syntax: ['true | false | number | string | [expressions]', 'receiver.member(arguments)', '!x | x && y | x || y | comparisons']
+    semantics:
+      - Operator precedence is unary, comparison, equality, logical AND, then logical OR.
+      - Calls may mix positional values and name:value arguments.
+    postconditions:
+      - predicate: expression evaluates to a runtime value
+        description: Evaluation either produces a typed value or a runtime diagnostic.
+        guarantee: enforced
+        evidence: evaluator result
+    examples:
+      - title: Boolean expression
+        language: hamster
+        test: parse
+        source: 'goal { verify ready = true && !false; return [1, "two"]; }'
+    related: [statement.verify]
+
+  - id: process.fork
+    title: Fork a process
+    kind: process
+    aliases: [fork]
+    since: 0.1.0
+    stability: experimental
+    summary: Snapshots the current run when Codex launches a subagent and binds the snapshot to that child.
+    syntax: ['Codex SubagentStart event (automatic)']
+    semantics:
+      - The child receives its own run ID, stack, machine, state pointer, limits, and process identity.
+      - Parent and child advance independently after the snapshot boundary.
+    preconditions:
+      - predicate: parent agent has an active bound run
+        description: Hamster needs a current process image to snapshot.
+        checked: hook
+      - predicate: Codex emits subagent lifecycle identity
+        description: The child agent ID must be visible in SubagentStart.
+        checked: hook
+    postconditions:
+      - predicate: child run is a complete snapshot of parent state
+        description: Mutating the child does not move the parent state pointer.
+        guarantee: enforced
+        evidence: persisted child run with parent_run_id and fork snapshot
+      - predicate: child agent ID is bound to child run ID
+        description: Later hook events route to the child's state machine.
+        guarantee: observed
+        evidence: Codex SubagentStart agent_id
+    failures:
+      - code: orphan_subagent
+        when: Codex starts a child without an observable parent binding.
+        remediation: Bind the parent run before spawning the subagent.
+    examples:
+      - title: Automatic fork
+        language: text
+        test: none
+        source: 'No language statement is required; spawning a Codex subagent triggers fork.'
+    related: [process.exec, process.wait, process.return]
+
+  - id: process.exec
+    title: Replace a process image
+    kind: process
+    aliases: [exec]
+    since: 0.1.0
+    stability: experimental
+    summary: Replaces the current run's complete machine, stack, state pointer, and machine-local limits.
+    syntax: ['hamster exec SCRIPT', 'hamster exec --text SOURCE']
+    semantics:
+      - Exec preserves process identity and parent/child relationships.
+      - The previous machine image cannot resume after a successful replacement.
+    preconditions:
+      - predicate: caller has an active bound run
+        description: Exec targets the calling Hamster process.
+        checked: hook
+    postconditions:
+      - predicate: current process contains only the replacement machine image
+        description: Machine stack, pointer, and local limits come from the replacement.
+        guarantee: enforced
+        evidence: atomic process.exec database transaction
+    examples:
+      - title: Replace child work
+        language: shell
+        test: none
+        source: 'hamster exec .hamster/scripts/build-provider.hmstr'
+    related: [process.fork, process.wait]
+
+  - id: process.wait
+    title: Wait for a child
+    kind: process
+    aliases: [wait]
+    since: 0.1.0
+    stability: experimental
+    summary: Suspends a parent until a direct child terminates, then returns its structured result.
+    syntax: ['hamster wait CHILD_RUN_ID']
+    semantics:
+      - Waiting is durable across daemon restarts.
+      - The current implementation accepts direct children only.
+    preconditions:
+      - predicate: target run is a direct child of caller
+        description: Arbitrary process waiting is not yet permitted.
+        checked: runtime
+    postconditions:
+      - predicate: returned child is terminal
+        description: A successful wait returns completion or termination state and result.
+        guarantee: enforced
+        evidence: persisted child status
+    examples:
+      - title: Join a child
+        language: shell
+        test: none
+        source: 'hamster wait run_1234'
+    related: [process.fork, process.exec, process.return]
+
+  - id: process.return
+    title: Process return
+    kind: process
+    aliases: [process-return]
+    since: 0.1.0
+    stability: experimental
+    summary: Completes a child process, clears its agent binding, and wakes a waiting parent.
+    syntax: ['Normal completion of a loop containing return']
+    semantics:
+      - This is the process-level effect of language return after all verifiers pass.
+    postconditions:
+      - predicate: child binding is cleared and result is durable
+        description: The terminated child no longer governs later agent tool calls.
+        guarantee: enforced
+        evidence: terminal run status and cleared binding
+    examples:
+      - title: Child completion
+        language: hamster
+        test: parse
+        source: 'goal { verify finished = true; return "artifact-id"; }'
+    related: [statement.return, process.wait]
+
+  - id: process.kill
+    title: Kill switch
+    kind: process
+    aliases: [kill]
+    since: 0.1.0
+    stability: experimental
+    summary: Emergency-terminates the current run and removes its agent binding so Hamster itself can be repaired.
+    syntax: ['hamster kill --reason TEXT']
+    semantics:
+      - Kill is handled before ordinary loop policy to prevent policy deadlock.
+      - The termination reason remains in the run record.
+    postconditions:
+      - predicate: run is killed and caller binding is absent
+        description: Subsequent tool calls are no longer governed by the killed run.
+        guarantee: enforced
+        evidence: terminal run status and binding deletion
+    examples:
+      - title: Emergency brake
+        language: shell
+        test: none
+        source: 'hamster kill --reason "repair Hamster runtime"'
+    related: [process.exec]
+
+  - id: primitive.bash-run
+    title: bash.run
+    kind: primitive
+    aliases: [bash.run]
+    since: 0.1.0
+    stability: experimental
+    summary: Requires the agent to issue one exact shell command as a flow step.
+    syntax: ['bash.run(command)']
+    semantics:
+      - The agent owns execution; Hamster advances when the expected hook-visible shell call is observed.
+      - Matching proves call occurrence, not the semantic effect of arbitrary shell code.
+    preconditions:
+      - predicate: command is exposed through a Codex pre-tool hook
+        description: Unobservable execution cannot satisfy an exact step.
+        checked: hook
+    postconditions:
+      - predicate: matching command call occurred
+        description: Hamster observes the exact expected shell invocation.
+        guarantee: observed
+        evidence: Codex pre-tool hook payload
+    examples:
+      - title: Create a branch
+        language: hamster
+        test: parse
+        source: 'flow { step branch = bash.run("git switch -c fix"); verify ok = true; return branch; }'
+    related: [statement.step, primitive.bash-check]
+
+  - id: primitive.bash-check
+    title: bash.check
+    kind: primitive
+    aliases: [bash.check]
+    since: 0.1.0
+    stability: experimental
+    summary: Runs a shell predicate under runtime ownership and returns true only for exit status zero.
+    syntax: ['bash.check(command)']
+    semantics:
+      - The state machine, not the agent, executes the command during verification.
+      - Standard output, standard error, exit code, and duration form verification evidence.
+    postconditions:
+      - predicate: boolean reflects command exit status
+        description: Zero is true; non-zero or execution failure is false.
+        guarantee: enforced
+        evidence: runtime subprocess result
+    examples:
+      - title: Verify Git state
+        language: hamster
+        test: parse
+        source: 'goal { verify clean = bash.check("git diff --check"); return true; }'
+    related: [statement.verify, primitive.bash-run]
+
+  - id: command.man
+    title: Reference manual command
+    kind: command
+    aliases: [man]
+    since: 0.1.0
+    stability: experimental
+    summary: Looks up, searches, lists, or serializes the embedded Hamster reference catalog.
+    syntax: ['hamster man SYMBOL', 'hamster man --search QUERY', 'hamster man --list', 'hamster man --json SYMBOL']
+    semantics:
+      - The CLI and documentation website consume the same versioned catalog.
+    postconditions:
+      - predicate: output corresponds to embedded catalog version
+        description: Installed CLI documentation cannot drift from its bundled runtime release.
+        guarantee: enforced
+        evidence: Go embedded reference source
+    examples:
+      - title: Read fork quickly
+        language: shell
+        test: none
+        source: 'hamster man fork'
+    related: [process.fork]
+
+  - id: language.grammar
+    title: Complete grammar
+    kind: language
+    aliases: [grammar, syntax]
+    since: 0.1.0
+    stability: experimental
+    summary: The normative EBNF grammar embedded in the Hamster CLI and published documentation.
+    syntax: ['hamster man grammar']
+    semantics:
+      - Parser behavior is authoritative when an experimental grammar detail conflicts with prose.
+    postconditions:
+      - predicate: grammar source ships with the CLI
+        description: Agents can inspect syntax without network access or external documentation.
+        guarantee: enforced
+        evidence: embedded language/grammar.ebnf
+    examples:
+      - title: Show grammar
+        language: shell
+        test: none
+        source: 'hamster man grammar'
+    related: [loop.goal, loop.flow, loop.foreach, language.expressions]

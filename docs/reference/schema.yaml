@@ -1,0 +1,11 @@
+schema: hamster.reference-schema/v1alpha1
+required: [id, title, kind, summary, syntax, semantics]
+contract_fields:
+  preconditions: Conditions that must hold before the operation starts.
+  postconditions: Conditions Hamster evaluates after the operation.
+  guarantee: One of enforced, observed, or declared.
+  evidence: The independent signal used to substantiate a guarantee.
+guarantees:
+  enforced: Hamster independently checks the condition before transition.
+  observed: Hamster observes an event, but cannot prove its complete effect.
+  declared: The condition is part of the contract but is not independently enforceable.

@@ -1,0 +1,32 @@
+flow build_reference {
+  limit time "8h";
+  limit attempts 24;
+
+  step catalog = goal {
+    allow "apply_patch";
+    allow "bash";
+    verify schema_exists = bash.check("test -f docs/reference/schema.yaml");
+    verify language_is_covered = bash.check("go test ./internal/reference");
+    return "catalog ready";
+  };
+
+  step cli = goal {
+    allow "apply_patch";
+    allow "bash";
+    verify man_resolves_fork = bash.check("go run ./cmd/hamster man fork >/dev/null");
+    verify cli_tests_pass = bash.check("go test ./cmd/hamster ./internal/reference");
+    return "CLI reference ready";
+  };
+
+  step website = goal {
+    allow "apply_patch";
+    allow "bash";
+    verify starlight_builds = bash.check("npm --prefix docs/site run build");
+    verify docs_command_works = bash.check("go run ./cmd/hamster docs --print-url >/dev/null");
+    return "documentation website ready";
+  };
+
+  verify go_tests = bash.check("go test ./...");
+  verify go_vet = bash.check("go vet ./...");
+  return "reference system complete";
+}

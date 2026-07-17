@@ -13,11 +13,14 @@ import (
 	"syscall"
 	"time"
 
+	"hamster/docs"
 	"hamster/internal/control"
 	"hamster/internal/daemon"
 	"hamster/internal/hook"
 	"hamster/internal/hookclient"
+	"hamster/internal/language"
 	"hamster/internal/project"
+	"hamster/internal/reference"
 	"hamster/internal/store"
 	"hamster/internal/trace"
 	"hamster/internal/version"
@@ -45,6 +48,8 @@ func run(ctx context.Context, arguments []string) error {
 		return initProject(arguments[1:])
 	case "ui":
 		return uiCommand(ctx, arguments[1:])
+	case "man":
+		return manCommand(arguments[1:])
 	case "daemon":
 		return daemonCommand(arguments[1:])
 	case "hook":
@@ -66,6 +71,79 @@ func run(ctx context.Context, arguments []string) error {
 	default:
 		return usageError()
 	}
+}
+
+func manCommand(arguments []string) error {
+	output, err := renderMan(arguments)
+	if err != nil {
+		return err
+	}
+	fmt.Print(output)
+	return nil
+}
+
+func renderMan(arguments []string) (string, error) {
+	flags := flag.NewFlagSet("man", flag.ContinueOnError)
+	list := flags.Bool("list", false, "list every reference symbol")
+	search := flags.String("search", "", "search reference symbols")
+	jsonOutput := flags.Bool("json", false, "print a reference entry as JSON")
+	full := flags.Bool("full", false, "include semantics, failures, and related symbols")
+	if err := flags.Parse(arguments); err != nil {
+		return "", err
+	}
+	catalog, err := reference.Load()
+	if err != nil {
+		return "", err
+	}
+	if err := catalog.Validate(language.Keywords()); err != nil {
+		return "", err
+	}
+	if *list {
+		var output strings.Builder
+		for _, entry := range catalog.List() {
+			fmt.Fprintf(&output, "%-24s %-10s %s\n", entry.ID, entry.Kind, entry.Summary)
+		}
+		return output.String(), nil
+	}
+	if *search != "" {
+		var output strings.Builder
+		for _, entry := range catalog.Search(*search) {
+			fmt.Fprintf(&output, "%-24s %s\n", entry.ID, entry.Summary)
+		}
+		if output.Len() == 0 {
+			return "", fmt.Errorf("no reference entries match %q", *search)
+		}
+		return output.String(), nil
+	}
+	if flags.NArg() != 1 {
+		return "", errors.New("usage: hamster man [--full|--json] SYMBOL | --list | --search QUERY")
+	}
+	symbol := flags.Arg(0)
+	if symbol == "grammar" || symbol == "language.grammar" {
+		grammar, err := docs.Reference.ReadFile("language/grammar.ebnf")
+		if err != nil {
+			return "", err
+		}
+		if !*jsonOutput {
+			return string(grammar), nil
+		}
+	}
+	entry, err := catalog.Resolve(symbol)
+	if err != nil {
+		matches := catalog.Search(symbol)
+		if len(matches) > 0 {
+			return "", fmt.Errorf("%w; try %q", err, matches[0].ID)
+		}
+		return "", err
+	}
+	if *jsonOutput {
+		payload, err := json.MarshalIndent(entry, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		return string(payload) + "\n", nil
+	}
+	return reference.Render(*entry, *full), nil
 }
 
 func traceCommand(ctx context.Context, arguments []string) error {
@@ -670,5 +748,5 @@ func requestID() string {
 }
 
 func usageError() error {
-	return errors.New("usage: hamster <init|ui|run|exec|wait|kill|status|inspect|trace|hook|daemon|version>")
+	return errors.New("usage: hamster <init|ui|man|run|exec|wait|kill|status|inspect|trace|hook|daemon|version>")
 }

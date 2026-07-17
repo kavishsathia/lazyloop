@@ -1,6 +1,9 @@
 package language
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 type Position struct {
 	Offset int `json:"offset"`
@@ -77,4 +80,15 @@ var keywords = map[string]TokenKind{
 	"in":       TokenIn,
 	"true":     TokenTrue,
 	"false":    TokenFalse,
+}
+
+// Keywords returns the language's reserved words in stable lexical order.
+// Reference validation uses this as the source of truth for documentation coverage.
+func Keywords() []string {
+	result := make([]string, 0, len(keywords))
+	for keyword := range keywords {
+		result = append(result, keyword)
+	}
+	sort.Strings(result)
+	return result
 }
