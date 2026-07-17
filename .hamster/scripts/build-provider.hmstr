@@ -1,0 +1,17 @@
+flow build_provider {
+  limit time 2h;
+  limit attempts 10;
+
+  step implementation = goal {
+    allow bash;
+    allow git;
+    allow apply_patch;
+    allow lsp;
+
+    verify builds = bash.check("go test ./...");
+    return builds;
+  };
+
+  verify complete = bash.check("go test ./...");
+  return implementation;
+}

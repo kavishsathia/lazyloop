@@ -8,6 +8,7 @@ type Decision struct {
 	Remediation string `json:"remediation,omitempty"`
 	Tracked     bool   `json:"tracked"`
 	RunID       string `json:"run_id,omitempty"`
+	Context     string `json:"context,omitempty"`
 }
 
 type codexOutput struct {
@@ -18,6 +19,7 @@ type hookSpecificOutput struct {
 	HookEventName            string `json:"hookEventName"`
 	PermissionDecision       string `json:"permissionDecision,omitempty"`
 	PermissionDecisionReason string `json:"permissionDecisionReason,omitempty"`
+	AdditionalContext        string `json:"additionalContext,omitempty"`
 }
 
 func CodexOutput(eventName string, decision Decision) ([]byte, error) {
@@ -30,6 +32,8 @@ func CodexOutput(eventName string, decision Decision) ([]byte, error) {
 		output.HookSpecificOutput = &hookSpecificOutput{
 			HookEventName: eventName, PermissionDecision: "deny", PermissionDecisionReason: reason,
 		}
+	} else if decision.Context != "" {
+		output.HookSpecificOutput = &hookSpecificOutput{HookEventName: eventName, AdditionalContext: decision.Context}
 	}
 	return json.Marshal(output)
 }

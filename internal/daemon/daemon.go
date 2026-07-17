@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"hamster/internal/control"
 	"hamster/internal/hook"
 	"hamster/internal/ir"
 	"hamster/internal/protocol"
@@ -122,10 +123,30 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 		if err = json.Unmarshal(request.Params, &params); err == nil {
 			result, err = s.store.GetRun(ctx, params.RunID)
 		}
+	case "run.current":
+		var params struct {
+			SessionID string `json:"session_id"`
+			AgentID   string `json:"agent_id,omitempty"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.FindCurrentRun(ctx, params.SessionID, params.AgentID)
+		}
 	case "hook.event":
 		var params hook.HookRequest
 		if err = json.Unmarshal(request.Params, &params); err == nil {
-			if params.Event.EventName == "PostToolUse" {
+			var command control.Command
+			var isControl bool
+			if params.Event.ToolName == "Bash" {
+				command, isControl, err = control.Parse(params.Event.Command())
+			}
+			if err != nil {
+				break
+			}
+			if isControl && params.Event.EventName == "PreToolUse" {
+				result, err = control.RegisterFromHook(ctx, s.store, s.runner, params.Event, command)
+			} else if isControl {
+				result = hook.Decision{Permission: "allow"}
+			} else if params.Event.EventName == "PostToolUse" {
 				result, err = s.runner.HandleHook(ctx, params.Event)
 			} else {
 				result, err = hook.NewEngine(s.store).Decide(ctx, params.Event)

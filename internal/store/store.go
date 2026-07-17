@@ -131,6 +131,42 @@ CREATE INDEX IF NOT EXISTS runs_process_id ON runs(process_id, created_at);
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize schema: %w", err)
 	}
+	if err := s.ensureColumn(ctx, "runs", "stack_json", `ALTER TABLE runs ADD COLUMN stack_json BLOB NOT NULL DEFAULT '[]'`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 2`); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureColumn(ctx context.Context, table, column, alteration string) error {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var index, notNull, primaryKey int
+		var name, kind string
+		var defaultValue any
+		if err := rows.Scan(&index, &name, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, alteration); err != nil {
+		return fmt.Errorf("migrate %s.%s: %w", table, column, err)
+	}
 	return nil
 }
 
