@@ -16,11 +16,25 @@ import (
 )
 
 type Runner struct {
-	store *store.Store
-	locks sync.Map
+	store    *store.Store
+	locks    sync.Map
+	clock    Clock
+	verifier Verifier
 }
 
-func New(state *store.Store) *Runner { return &Runner{store: state} }
+func New(state *store.Store) *Runner {
+	return NewWithDependencies(state, RealClock{}, CommandVerifier{})
+}
+
+func NewWithDependencies(state *store.Store, clock Clock, verifier Verifier) *Runner {
+	if clock == nil {
+		clock = RealClock{}
+	}
+	if verifier == nil {
+		verifier = CommandVerifier{}
+	}
+	return &Runner{store: state, clock: clock, verifier: verifier}
+}
 
 func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decision, error) {
 	if event.EventName != "PostToolUse" {
@@ -113,15 +127,15 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 		}
 		switch state.Kind {
 		case ir.StateAgentWork, ir.StateStep:
-			_, err := enforceLimits(run, environment)
+			_, err := enforceLimits(run, environment, r.clock.Now())
 			return err
 		case ir.StatePolicy:
 			run.StateID = state.Next
 		case ir.StateLimit:
-			activateLimit(environment, run.Machine, state, run.Iteration)
+			activateLimit(environment, run.Machine, state, run.Iteration, r.clock.Now())
 			run.StateID = state.Next
 		case ir.StateVerify:
-			value, err := (Evaluator{WorkingDirectory: run.WorkspaceRoot}).Evaluate(ctx, *state.Expression, environment)
+			value, err := r.evaluator(run).Evaluate(ctx, *state.Expression, environment)
 			if err != nil {
 				return fmt.Errorf("verify %s: %w", state.Name, err)
 			}
@@ -133,7 +147,7 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 			run.Machine, run.StateID = *state.Nested, state.Nested.InitialState
 			run.Iteration = 0
 		case ir.StateSequence:
-			value, err := (Evaluator{WorkingDirectory: run.WorkspaceRoot}).Evaluate(ctx, run.Machine.Foreach.Sequence, environment)
+			value, err := r.evaluator(run).Evaluate(ctx, run.Machine.Foreach.Sequence, environment)
 			if err != nil {
 				return err
 			}
@@ -181,7 +195,7 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 			} else {
 				run.Iteration++
 				clearVerifications(run.Machine, environment)
-				exceeded, err := enforceLimits(run, environment)
+				exceeded, err := enforceLimits(run, environment, r.clock.Now())
 				if err != nil {
 					return err
 				}
@@ -191,7 +205,7 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 				run.StateID = state.OnFailure
 			}
 		case ir.StateComplete:
-			result, err := loopResult(ctx, run, environment)
+			result, err := r.loopResult(ctx, run, environment)
 			if err != nil {
 				return err
 			}
@@ -228,21 +242,21 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 	return fmt.Errorf("machine exceeded internal transition safety limit")
 }
 
-func loopResult(ctx context.Context, run *store.Run, environment Environment) (any, error) {
+func (r *Runner) loopResult(ctx context.Context, run *store.Run, environment Environment) (any, error) {
 	if run.Machine.Kind == ir.LoopForeach {
 		return environment[foreachKey(run.Machine, "result")], nil
 	}
 	if run.Machine.Return == nil {
 		return nil, nil
 	}
-	value, err := (Evaluator{WorkingDirectory: run.WorkspaceRoot}).Evaluate(ctx, *run.Machine.Return, environment)
+	value, err := r.evaluator(run).Evaluate(ctx, *run.Machine.Return, environment)
 	if err != nil {
 		return nil, fmt.Errorf("evaluate return: %w", err)
 	}
 	return value, nil
 }
 
-func enforceLimits(run *store.Run, environment Environment) (bool, error) {
+func enforceLimits(run *store.Run, environment Environment, now time.Time) (bool, error) {
 	limits, _ := environment["__limits"].(map[string]any)
 	for _, raw := range limits {
 		limit, ok := raw.(map[string]any)
@@ -270,7 +284,7 @@ func enforceLimits(run *store.Run, environment Environment) (bool, error) {
 			if err != nil {
 				return false, err
 			}
-			if time.Since(activated) >= duration {
+			if now.Sub(activated) >= duration {
 				setLimitExceeded(run, kind, duration.String())
 				return true, nil
 			}
@@ -284,7 +298,7 @@ func setLimitExceeded(run *store.Run, kind string, value any) {
 	run.Result, _ = json.Marshal(map[string]any{"limit": kind, "value": value})
 }
 
-func activateLimit(environment Environment, machine ir.Machine, state ir.State, iteration int) {
+func activateLimit(environment Environment, machine ir.Machine, state ir.State, iteration int, now time.Time) {
 	limits, ok := environment["__limits"].(map[string]any)
 	if !ok {
 		limits = map[string]any{}
@@ -296,7 +310,7 @@ func activateLimit(environment Environment, machine ir.Machine, state ir.State, 
 	}
 	limits[key] = map[string]any{
 		"kind": state.Limit.Kind, "value": state.Limit.Value.Value,
-		"activated_at": time.Now().UTC().Format(time.RFC3339Nano), "iteration": float64(iteration),
+		"activated_at": now.UTC().Format(time.RFC3339Nano), "iteration": float64(iteration),
 	}
 }
 
@@ -388,6 +402,10 @@ func foreachKey(machine ir.Machine, suffix string) string {
 func (r *Runner) runLock(runID string) *sync.Mutex {
 	value, _ := r.locks.LoadOrStore(runID, &sync.Mutex{})
 	return value.(*sync.Mutex)
+}
+
+func (r *Runner) evaluator(run *store.Run) Evaluator {
+	return Evaluator{WorkingDirectory: run.WorkspaceRoot, Verifier: r.verifier}
 }
 
 func (r *Runner) recordWithoutAdvance(ctx context.Context, event hook.Event, run *store.Run, decision hook.Decision) error {

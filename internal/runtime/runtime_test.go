@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"hamster/internal/compiler"
 	"hamster/internal/hook"
@@ -122,5 +123,35 @@ func TestForeachCollectsInnerLoopReturns(t *testing.T) {
 	finished, _ := runner.store.GetRun(context.Background(), run.ID)
 	if finished.Status != "complete" || string(finished.Result) != `[true,true]` {
 		t.Fatalf("status = %s, result = %s", finished.Status, finished.Result)
+	}
+}
+
+func TestInjectedClockAndVerifierMakeLimitReplayDeterministic(t *testing.T) {
+	defaultRunner, run, _ := runtimeRun(t, `flow replay {
+  limit time 1s;
+  step action = bash.run("ignored");
+  verify ready = bash.check("recorded-check");
+  return ready;
+}`)
+	clock := NewFixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	verifier := NewReplayVerifier([]VerificationResult{{Passed: false}})
+	runner := NewWithDependencies(defaultRunner.store, clock, verifier)
+	if _, err := runner.Start(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(2 * time.Second)
+	if _, err := runner.HandleHook(context.Background(), postEvent("replayed-tool")); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := runner.store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Status != "limit_exceeded" {
+		t.Fatalf("status = %s, want limit_exceeded", finished.Status)
+	}
+	calls := verifier.Calls()
+	if len(calls) != 1 || calls[0].Command != "recorded-check" {
+		t.Fatalf("verifier calls = %#v", calls)
 	}
 }

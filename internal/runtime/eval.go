@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"reflect"
 	"strconv"
 	"strings"
@@ -16,6 +15,7 @@ type Environment map[string]any
 
 type Evaluator struct {
 	WorkingDirectory string
+	Verifier         Verifier
 }
 
 func (e Evaluator) Evaluate(ctx context.Context, expression ir.Expression, environment Environment) (any, error) {
@@ -97,17 +97,11 @@ func (e Evaluator) call(ctx context.Context, expression ir.Expression, environme
 		if !ok {
 			return nil, errors.New("bash.check command must be a string")
 		}
-		process := exec.CommandContext(ctx, "sh", "-c", command)
-		process.Dir = e.WorkingDirectory
-		err := process.Run()
-		if err == nil {
-			return true, nil
+		verifier := e.Verifier
+		if verifier == nil {
+			verifier = CommandVerifier{}
 		}
-		var exitError *exec.ExitError
-		if errors.As(err, &exitError) {
-			return false, nil
-		}
-		return nil, fmt.Errorf("execute verifier: %w", err)
+		return verifier.Check(ctx, e.WorkingDirectory, command)
 	default:
 		return nil, fmt.Errorf("runtime cannot execute %q", path)
 	}
