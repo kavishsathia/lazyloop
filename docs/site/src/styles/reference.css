@@ -1,0 +1,112 @@
+:root {
+  --sl-color-accent-low: #e9edf2;
+  --sl-color-accent: #303b49;
+  --sl-color-accent-high: #111820;
+  --sl-color-white: #101419;
+  --sl-color-gray-1: #252b32;
+  --sl-color-gray-2: #424a54;
+  --sl-color-gray-3: #68717c;
+  --sl-color-gray-4: #a8afb7;
+  --sl-color-gray-5: #d9dde2;
+  --sl-color-gray-6: #eef0f3;
+  --sl-color-black: #fafafa;
+  --sl-font: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --sl-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --sl-content-width: 52rem;
+}
+
+:root[data-theme='dark'] {
+  --sl-color-accent-low: #242b33;
+  --sl-color-accent: #aab4bf;
+  --sl-color-accent-high: #eef1f4;
+  --sl-color-white: #f3f4f6;
+  --sl-color-gray-1: #d8dce1;
+  --sl-color-gray-2: #adb4bd;
+  --sl-color-gray-3: #7f8894;
+  --sl-color-gray-4: #505965;
+  --sl-color-gray-5: #303740;
+  --sl-color-gray-6: #222830;
+  --sl-color-black: #171b20;
+}
+
+body {
+  letter-spacing: -0.006em;
+}
+
+.site-title {
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+
+.hero h1 {
+  max-width: 17ch;
+  font-size: clamp(2.8rem, 7vw, 5.4rem);
+  letter-spacing: -0.055em;
+  line-height: 0.96;
+}
+
+.hero .tagline {
+  max-width: 38rem;
+  color: var(--sl-color-gray-2);
+  font-size: 1.15rem;
+}
+
+.reference-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 1.5rem;
+}
+
+.reference-meta span,
+.guarantee {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 999px;
+  padding: 0.12rem 0.55rem;
+  color: var(--sl-color-gray-2);
+  font-family: var(--sl-font-mono);
+  font-size: 0.71rem;
+  font-weight: 600;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.guarantee-enforced {
+  border-color: #4e6b58;
+  color: #34533f;
+  background: #eef5f0;
+}
+
+.guarantee-observed {
+  border-color: #7b7051;
+  color: #655a3e;
+  background: #f7f3e8;
+}
+
+.guarantee-declared {
+  border-color: var(--sl-color-gray-4);
+  background: var(--sl-color-gray-6);
+}
+
+:root[data-theme='dark'] .guarantee-enforced,
+:root[data-theme='dark'] .guarantee-observed {
+  background: transparent;
+  color: var(--sl-color-gray-1);
+}
+
+table {
+  font-size: 0.86rem;
+}
+
+th {
+  color: var(--sl-color-gray-2);
+  font-size: 0.72rem;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+code {
+  letter-spacing: -0.018em;
+}

@@ -1,0 +1,18 @@
+{
+  "name": "@hamster/docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "node scripts/generate-reference.mjs",
+    "dev": "pnpm generate && ASTRO_TELEMETRY_DISABLED=1 astro dev",
+    "build": "pnpm generate && ASTRO_TELEMETRY_DISABLED=1 astro check && ASTRO_TELEMETRY_DISABLED=1 astro build",
+    "preview": "ASTRO_TELEMETRY_DISABLED=1 astro preview"
+  },
+  "dependencies": {
+    "@astrojs/check": "^0.9.9",
+    "@astrojs/starlight": "^0.41.3",
+    "astro": "^7.1.0",
+    "typescript": "^6.0.3",
+    "yaml": "^2.9.0"
+  }
+}

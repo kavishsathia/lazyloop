@@ -21,7 +21,7 @@ flow build_reference {
   step website = goal {
     allow "apply_patch";
     allow "bash";
-    verify starlight_builds = bash.check("npm --prefix docs/site run build");
+    verify starlight_builds = bash.check("pnpm --dir docs/site run build");
     verify docs_command_works = bash.check("go run ./cmd/hamster docs --print-url >/dev/null");
     return "documentation website ready";
   };
