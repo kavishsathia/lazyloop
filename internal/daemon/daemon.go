@@ -8,14 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"hamster/internal/control"
 	"hamster/internal/hook"
 	"hamster/internal/ir"
+	"hamster/internal/observe"
 	"hamster/internal/protocol"
 	hamsterruntime "hamster/internal/runtime"
 	"hamster/internal/store"
@@ -23,14 +26,19 @@ import (
 )
 
 type Paths struct {
-	Root     string
-	Database string
-	Socket   string
+	Root             string
+	Database         string
+	Socket           string
+	DashboardAddress string
+	DashboardFile    string
 }
 
 func DefaultPaths(home string) Paths {
 	root := filepath.Join(home, ".hamster")
-	return Paths{Root: root, Database: filepath.Join(root, "hamster.db"), Socket: filepath.Join(root, "run", "hamster.sock")}
+	return Paths{
+		Root: root, Database: filepath.Join(root, "hamster.db"), Socket: filepath.Join(root, "run", "hamster.sock"),
+		DashboardAddress: "127.0.0.1:7331", DashboardFile: filepath.Join(root, "run", "dashboard-url"),
+	}
 }
 
 type Server struct {
@@ -42,6 +50,14 @@ type Server struct {
 func New(state *store.Store) *Server { return &Server{store: state, runner: hamsterruntime.New(state)} }
 
 func (s *Server) Serve(ctx context.Context, socketPath string) error {
+	return s.serve(ctx, socketPath, "", "")
+}
+
+func (s *Server) ServeWithDashboard(ctx context.Context, socketPath, dashboardAddress, dashboardFile string) error {
+	return s.serve(ctx, socketPath, dashboardAddress, dashboardFile)
+}
+
+func (s *Server) serve(ctx context.Context, socketPath, dashboardAddress, dashboardFile string) error {
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
 		return fmt.Errorf("create socket directory: %w", err)
 	}
@@ -57,10 +73,38 @@ func (s *Server) Serve(ctx context.Context, socketPath string) error {
 	if err := os.Chmod(socketPath, 0o600); err != nil {
 		return fmt.Errorf("secure socket: %w", err)
 	}
+	var dashboardListener net.Listener
+	var dashboardServer *http.Server
+	if dashboardAddress != "" {
+		if err := validateDashboardAddress(dashboardAddress); err != nil {
+			return err
+		}
+		dashboardListener, err = net.Listen("tcp", dashboardAddress)
+		if err != nil {
+			return fmt.Errorf("listen on dashboard %s: %w", dashboardAddress, err)
+		}
+		dashboardServer = &http.Server{Handler: observe.NewHandler(s.store), ReadHeaderTimeout: 5 * time.Second}
+		go func() { _ = dashboardServer.Serve(dashboardListener) }()
+		if dashboardFile != "" {
+			if err := os.MkdirAll(filepath.Dir(dashboardFile), 0o700); err != nil {
+				dashboardListener.Close()
+				return err
+			}
+			if err := os.WriteFile(dashboardFile, []byte("http://"+dashboardListener.Addr().String()+"\n"), 0o600); err != nil {
+				dashboardListener.Close()
+				return err
+			}
+			defer os.Remove(dashboardFile)
+		}
+		defer dashboardListener.Close()
+	}
 
 	go func() {
 		<-ctx.Done()
 		listener.Close()
+		if dashboardServer != nil {
+			_ = dashboardServer.Close()
+		}
 	}()
 	for {
 		connection, err := listener.Accept()
@@ -72,6 +116,21 @@ func (s *Server) Serve(ctx context.Context, socketPath string) error {
 		}
 		go s.handleConnection(ctx, connection)
 	}
+}
+
+func validateDashboardAddress(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid dashboard address %q: %w", address, err)
+	}
+	if host == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("dashboard must listen on a loopback address, got %q", address)
+	}
+	return nil
 }
 
 func (s *Server) handleConnection(ctx context.Context, connection net.Conn) {
@@ -260,8 +319,14 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 					runID = before.RunID
 				}
 				verificationJSON, _ := json.Marshal(s.runner.TakeObservations(runID))
-				err = s.store.AppendActiveTrace(ctx, params.Event.SessionID, input, decision,
-					nullableSnapshot(beforeJSON, before), nullableSnapshot(afterJSON, after), nullableVerifications(verificationJSON))
+				verifications := nullableVerifications(verificationJSON)
+				if len(verifications) > 0 {
+					err = s.store.SetEventVerifications(ctx, params.Event.RequestID(), verifications)
+				}
+				if err == nil {
+					err = s.store.AppendActiveTrace(ctx, params.Event.SessionID, input, decision,
+						nullableSnapshot(beforeJSON, before), nullableSnapshot(afterJSON, after), verifications)
+				}
 			}
 		}
 	default:

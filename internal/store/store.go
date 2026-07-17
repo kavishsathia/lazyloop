@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS events (
   kind TEXT NOT NULL,
   payload_json BLOB NOT NULL,
   decision_json BLOB NOT NULL,
+  verification_json BLOB,
   created_at TEXT NOT NULL
 );
 
@@ -189,10 +190,13 @@ CREATE INDEX IF NOT EXISTS trace_events_trace_id ON trace_events(trace_id, seque
 	if err := s.ensureColumn(ctx, "runs", "fork_key", `ALTER TABLE runs ADD COLUMN fork_key TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
+	if err := s.ensureColumn(ctx, "events", "verification_json", `ALTER TABLE events ADD COLUMN verification_json BLOB`); err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS unique_run_fork_key ON runs(fork_key) WHERE fork_key <> ''`); err != nil {
 		return fmt.Errorf("create fork key index: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 6`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 7`); err != nil {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	return nil

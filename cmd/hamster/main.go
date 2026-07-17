@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -42,6 +43,8 @@ func run(ctx context.Context, arguments []string) error {
 		return nil
 	case "init":
 		return initProject(arguments[1:])
+	case "ui":
+		return uiCommand(ctx, arguments[1:])
 	case "daemon":
 		return daemonCommand(arguments[1:])
 	case "hook":
@@ -332,10 +335,11 @@ func initProject(arguments []string) error {
 
 func daemonCommand(arguments []string) error {
 	if len(arguments) == 0 || arguments[0] != "serve" {
-		return errors.New("usage: hamster daemon serve [--home PATH]")
+		return errors.New("usage: hamster daemon serve [--home PATH] [--http ADDRESS]")
 	}
 	flags := flag.NewFlagSet("daemon serve", flag.ContinueOnError)
 	homeFlag := flags.String("home", "", "user home directory")
+	httpFlag := flags.String("http", "", "loopback address for the observability console")
 	if err := flags.Parse(arguments[1:]); err != nil {
 		return err
 	}
@@ -344,6 +348,9 @@ func daemonCommand(arguments []string) error {
 		return err
 	}
 	paths := daemon.DefaultPaths(home)
+	if *httpFlag != "" {
+		paths.DashboardAddress = *httpFlag
+	}
 	state, err := store.Open(paths.Database)
 	if err != nil {
 		return err
@@ -351,7 +358,33 @@ func daemonCommand(arguments []string) error {
 	defer state.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return daemon.New(state).Serve(ctx, paths.Socket)
+	return daemon.New(state).ServeWithDashboard(ctx, paths.Socket, paths.DashboardAddress, paths.DashboardFile)
+}
+
+func uiCommand(ctx context.Context, arguments []string) error {
+	flags := flag.NewFlagSet("ui", flag.ContinueOnError)
+	homeFlag := flags.String("home", "", "user home directory")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	home, err := resolveHome(*homeFlag)
+	if err != nil {
+		return err
+	}
+	paths := daemon.DefaultPaths(home)
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := daemon.Ensure(ctx, paths, executable, home); err != nil {
+		return err
+	}
+	payload, err := os.ReadFile(paths.DashboardFile)
+	if err != nil {
+		return fmt.Errorf("dashboard address is unavailable; restart the Hamster daemon with this CLI version: %w", err)
+	}
+	fmt.Println(strings.TrimSpace(string(payload)))
+	return nil
 }
 
 func hookCommand(ctx context.Context) error {
@@ -637,5 +670,5 @@ func requestID() string {
 }
 
 func usageError() error {
-	return errors.New("usage: hamster <init|run|exec|wait|kill|status|inspect|trace|hook|daemon|version>")
+	return errors.New("usage: hamster <init|ui|run|exec|wait|kill|status|inspect|trace|hook|daemon|version>")
 }

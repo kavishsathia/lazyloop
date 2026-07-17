@@ -51,6 +51,19 @@ func TestRemoveStaleSocketRefusesRegularFile(t *testing.T) {
 	}
 }
 
+func TestDashboardRejectsNonLoopbackAddress(t *testing.T) {
+	for _, address := range []string{"0.0.0.0:7331", "[::]:7331", "example.com:7331"} {
+		if err := validateDashboardAddress(address); err == nil {
+			t.Fatalf("validateDashboardAddress(%q) error = nil", address)
+		}
+	}
+	for _, address := range []string{"127.0.0.1:7331", "[::1]:0", "localhost:7331"} {
+		if err := validateDashboardAddress(address); err != nil {
+			t.Fatalf("validateDashboardAddress(%q) error = %v", address, err)
+		}
+	}
+}
+
 func TestHookHandlingCapturesActiveTrace(t *testing.T) {
 	state, err := store.Open(filepath.Join(t.TempDir(), "hamster.db"))
 	if err != nil {

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Hamster Runtime</title>
+  <meta name="description" content="Local runtime observability for Hamster sessions, agents, loops, and verification evidence.">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">H</span>
+        <span class="brand-name">Hamster</span>
+        <span class="brand-area">Runtime</span>
+      </div>
+      <div class="connection" id="connection" role="status" aria-live="polite">
+        <span class="connection-dot"></span>
+        <span id="connection-label">Connecting</span>
+      </div>
+    </header>
+
+    <aside class="sidebar" aria-label="Codex sessions">
+      <div class="sidebar-heading">
+        <span>Sessions</span>
+        <span class="count" id="session-count">0</span>
+      </div>
+      <nav class="session-list" id="session-list"></nav>
+      <div class="sidebar-foot">
+        <span>Local daemon</span>
+        <span id="last-sync">Not synced</span>
+      </div>
+    </aside>
+
+    <main class="workspace" id="workspace">
+      <section class="empty-state" id="empty-state">
+        <div class="empty-rule"></div>
+        <h1>No runtime data yet</h1>
+        <p>Start a Hamster loop from Codex. Sessions and agent processes will appear here automatically.</p>
+        <code>hamster run &lt;workflow&gt;</code>
+      </section>
+
+      <div class="runtime-view is-hidden" id="runtime-view">
+        <section class="page-heading">
+          <div>
+            <div class="eyebrow" id="workspace-path">Workspace</div>
+            <h1 id="session-title">Session</h1>
+          </div>
+          <div class="session-identity" id="session-identity"></div>
+        </section>
+
+        <section class="metrics" aria-label="Session summary">
+          <div class="metric"><span class="metric-label">Processes</span><strong id="metric-processes">0</strong></div>
+          <div class="metric"><span class="metric-label">Running</span><strong id="metric-running">0</strong></div>
+          <div class="metric"><span class="metric-label">Waiting</span><strong id="metric-waiting">0</strong></div>
+          <div class="metric"><span class="metric-label">Terminal</span><strong id="metric-terminal">0</strong></div>
+        </section>
+
+        <div class="content-grid">
+          <section class="panel process-panel">
+            <div class="panel-heading">
+              <div>
+                <h2>Process tree</h2>
+                <p>Codex agents and their current machine position</p>
+              </div>
+              <span class="live-label"><span></span>Live</span>
+            </div>
+            <div class="process-columns" aria-hidden="true">
+              <span>Agent</span><span>Machine</span><span>Current state</span><span>Status</span><span>Updated</span>
+            </div>
+            <div class="process-list" id="process-list"></div>
+          </section>
+
+          <section class="panel detail-panel" id="detail-panel">
+            <div class="detail-placeholder" id="detail-placeholder">
+              <span class="selection-glyph" aria-hidden="true"></span>
+              <h2>Select a process</h2>
+              <p>Inspect its state machine, stack, limits, decisions, and verification evidence.</p>
+            </div>
+            <div class="detail-content is-hidden" id="detail-content"></div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
