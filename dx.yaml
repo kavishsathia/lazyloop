@@ -161,7 +161,7 @@ journey:
       - "Hamster runs verify steps independently from the agent's claims"
       - "The flow repeats until every verification passes or a limit terminates it"
     human_experience: "The person watches progress but does not repeatedly remind Codex to test, retry, or inspect status"
-    product_status: "core loops, hooks, persistence, limits, and verification exist; automatic subagent fork/exec/wait remains planned"
+    product_status: "core loops, hooks, persistence, limits, verification, automatic subagent fork, exec, and direct-child wait exist"
 
   - id: "10-handle-escalations"
     title: "Ask the human only when a decision is genuinely needed"
@@ -246,6 +246,7 @@ implementation_map:
     - "Allow and disallow policies for supported hook boundaries"
     - "Independent bash.check verification"
     - "Versioned, sanitized Codex trace capture and replay"
+    - "Automatic Codex subagent fork binding plus process exec, wait, and structured return"
   next_dx_slice:
     - "Publish and pin the npx distribution"
     - "Add hamster doctor with machine-readable preflight and friendly remediation"
@@ -257,5 +258,6 @@ implementation_map:
     - "Git as typed operations and verifiable predicates"
     - "GitHub account, repository, issue, and pull-request workflows"
     - "Docker lifecycle and health predicates"
-    - "Codex subagent fork, exec, wait, and return semantics"
+    - "Fork-token correlation for simultaneous pending Codex subagents"
+    - "Join, race, cancellation, and supervision semantics"
     - "LSP diagnostics as typed verification evidence"

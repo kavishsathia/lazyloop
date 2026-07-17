@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS runs (
   stack_json BLOB NOT NULL DEFAULT '[]',
   result_json BLOB,
   termination_reason TEXT NOT NULL DEFAULT '',
+  fork_key TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -125,6 +126,25 @@ CREATE TABLE IF NOT EXISTS run_limits (
   activated_iteration INTEGER NOT NULL,
   PRIMARY KEY(run_id, state_id)
 );
+
+CREATE TABLE IF NOT EXISTS process_waits (
+  parent_run_id TEXT NOT NULL REFERENCES runs(id),
+  child_run_id TEXT NOT NULL REFERENCES runs(id),
+  created_at TEXT NOT NULL,
+  completed_at TEXT,
+  PRIMARY KEY(parent_run_id, child_run_id)
+);
+
+CREATE TABLE IF NOT EXISTS pending_forks (
+  fork_key TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  child_run_id TEXT NOT NULL REFERENCES runs(id),
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  claimed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS pending_forks_session ON pending_forks(session_id, status, created_at);
 
 CREATE TABLE IF NOT EXISTS traces (
   id TEXT PRIMARY KEY,
@@ -166,7 +186,13 @@ CREATE INDEX IF NOT EXISTS trace_events_trace_id ON trace_events(trace_id, seque
 	if err := s.ensureColumn(ctx, "runs", "termination_reason", `ALTER TABLE runs ADD COLUMN termination_reason TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 5`); err != nil {
+	if err := s.ensureColumn(ctx, "runs", "fork_key", `ALTER TABLE runs ADD COLUMN fork_key TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS unique_run_fork_key ON runs(fork_key) WHERE fork_key <> ''`); err != nil {
+		return fmt.Errorf("create fork key index: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 6`); err != nil {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	return nil

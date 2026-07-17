@@ -137,3 +137,108 @@ func TestKillControlCommandEscapesActiveRun(t *testing.T) {
 		t.Fatalf("post-kill decision = %#v", decision)
 	}
 }
+
+func TestForkLifecycleSnapshotsSpawnAndBindsSubagentStart(t *testing.T) {
+	state, err := store.Open(filepath.Join(t.TempDir(), "hamster.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	machine := ir.Machine{ID: "machine_fork", Name: "parallel", Kind: ir.LoopGoal, InitialState: "state_work", States: []ir.State{{ID: "state_work", Kind: ir.StateAgentWork}}}
+	parent, err := state.CreateRun(context.Background(), store.CreateRunParams{WorkspaceRoot: "/repo", CodexSessionID: "session-fork", Machine: machine})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(state)
+	spawn := hook.Event{
+		SessionID: "session-fork", EventName: "PreToolUse", ToolName: "collaborationspawn_agent", ToolUseID: "spawn-1", WorkspaceRoot: "/repo",
+		ToolInput: json.RawMessage(`{"task_name":"child"}`),
+	}
+	params, _ := json.Marshal(hook.HookRequest{Event: spawn})
+	response := server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "spawn-hook", Method: "hook.event", Params: params})
+	if response.Error != nil {
+		t.Fatalf("spawn hook error = %#v", response.Error)
+	}
+
+	started := hook.Event{SessionID: "session-fork", AgentID: "agent-child", EventName: "SubagentStart", WorkspaceRoot: "/repo", TurnID: "turn-child"}
+	params, _ = json.Marshal(hook.HookRequest{Event: started})
+	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "start-hook", Method: "hook.event", Params: params})
+	if response.Error != nil {
+		t.Fatalf("subagent start error = %#v", response.Error)
+	}
+	child, err := state.FindCurrentRun(context.Background(), "session-fork", "agent-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.ID == parent.ID || child.ParentRunID != parent.ID || child.StateID != parent.StateID {
+		t.Fatalf("forked child = %#v, parent = %#v", child, parent)
+	}
+
+	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "start-hook-replay", Method: "hook.event", Params: params})
+	if response.Error != nil {
+		t.Fatalf("replayed subagent start error = %#v", response.Error)
+	}
+	replayed, err := state.FindCurrentRun(context.Background(), "session-fork", "agent-child")
+	if err != nil || replayed.ID != child.ID {
+		t.Fatalf("replayed child binding = %#v, %v", replayed, err)
+	}
+}
+
+func TestExecAndWaitControlCommandsUseProcessKernel(t *testing.T) {
+	state, err := store.Open(filepath.Join(t.TempDir(), "hamster.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	machine := ir.Machine{ID: "machine_control", Name: "control", Kind: ir.LoopGoal, InitialState: "state_work", States: []ir.State{{ID: "state_work", Kind: ir.StateAgentWork}}}
+	execRun, err := state.CreateRun(context.Background(), store.CreateRunParams{WorkspaceRoot: "/repo", CodexSessionID: "session-exec-control", Machine: machine})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(state)
+	execEvent := hook.Event{
+		SessionID: "session-exec-control", EventName: "PreToolUse", ToolName: "Bash", ToolUseID: "exec-tool", WorkspaceRoot: "/repo",
+		ToolInput: json.RawMessage(`{"command":"hamster exec --text 'flow replacement { step command = bash.run(\"true\"); verify passed = bash.check(\"true\"); return passed; }'"}`),
+	}
+	params, _ := json.Marshal(hook.HookRequest{Event: execEvent})
+	response := server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "exec-hook", Method: "hook.event", Params: params})
+	if response.Error != nil {
+		t.Fatalf("exec hook error = %#v", response.Error)
+	}
+	executed, err := state.GetRun(context.Background(), execRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.ProcessID != execRun.ProcessID || executed.Machine.Name != "replacement" || executed.StateID != "state_0" {
+		t.Fatalf("executed run = %#v", executed)
+	}
+
+	parent, err := state.CreateRun(context.Background(), store.CreateRunParams{WorkspaceRoot: "/repo", CodexSessionID: "session-wait-control", Machine: machine})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := state.ForkRun(context.Background(), parent.ID, "wait-child", "wait-child-fork")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitEvent := hook.Event{
+		SessionID: "session-wait-control", EventName: "PreToolUse", ToolName: "Bash", ToolUseID: "wait-tool", WorkspaceRoot: "/repo",
+		ToolInput: json.RawMessage(`{"command":"hamster wait ` + child.ID + `"}`),
+	}
+	params, _ = json.Marshal(hook.HookRequest{Event: waitEvent})
+	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "wait-hook", Method: "hook.event", Params: params})
+	if response.Error != nil {
+		t.Fatalf("wait hook error = %#v", response.Error)
+	}
+	waiting, err := state.GetRun(context.Background(), parent.ID)
+	if err != nil || waiting.Status != "waiting" {
+		t.Fatalf("waiting parent = %#v, %v", waiting, err)
+	}
+	if _, err := state.ReturnRun(context.Background(), child.ID, json.RawMessage(`true`)); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := state.GetRun(context.Background(), parent.ID)
+	if err != nil || resumed.Status != "running" {
+		t.Fatalf("resumed parent = %#v, %v", resumed, err)
+	}
+}

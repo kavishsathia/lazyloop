@@ -48,6 +48,10 @@ func run(ctx context.Context, arguments []string) error {
 		return hookCommand(ctx)
 	case "run":
 		return runCommand(ctx, arguments[1:])
+	case "exec":
+		return execCommand(ctx, arguments[1:])
+	case "wait":
+		return waitCommand(ctx, arguments[1:])
 	case "kill":
 		return killCommand(ctx, arguments[1:])
 	case "status":
@@ -446,6 +450,85 @@ func statusCommand(ctx context.Context, arguments []string) error {
 	return printRunSummary(current)
 }
 
+func execCommand(ctx context.Context, arguments []string) error {
+	flags := flag.NewFlagSet("exec", flag.ContinueOnError)
+	session := flags.String("session", "", "Codex session ID for an explicit exec")
+	agent := flags.String("agent", "", "Codex agent ID")
+	homeFlag := flags.String("home", "", "user home directory")
+	entry := flags.String("entry", "", "named loop to execute")
+	text := flags.String("text", "", "ephemeral replacement loop source")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if *session == "" {
+		fmt.Println("Hamster exec is handled by the Codex pre-tool hook. Outside Codex, pass --session.")
+		return nil
+	}
+	var machine any
+	var err error
+	if *text != "" {
+		machine, err = control.CompileSource(*text, *entry)
+	} else if flags.NArg() == 1 {
+		machine, err = control.CompileFile(flags.Arg(0), *entry)
+	} else {
+		return errors.New("exec requires a script or --text")
+	}
+	if err != nil {
+		return err
+	}
+	home, err := resolveHome(*homeFlag)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, home)
+	if err != nil {
+		return err
+	}
+	var current store.Run
+	if err := client.Call(ctx, requestID(), "run.current", map[string]string{"session_id": *session, "agent_id": *agent}, &current); err != nil {
+		return err
+	}
+	var executed store.Run
+	if err := client.Call(ctx, requestID(), "process.exec", map[string]any{"run_id": current.ID, "machine": machine}, &executed); err != nil {
+		return err
+	}
+	return printRunSummary(executed)
+}
+
+func waitCommand(ctx context.Context, arguments []string) error {
+	flags := flag.NewFlagSet("wait", flag.ContinueOnError)
+	session := flags.String("session", "", "Codex session ID for an explicit wait")
+	agent := flags.String("agent", "", "Codex agent ID")
+	homeFlag := flags.String("home", "", "user home directory")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if *session == "" {
+		fmt.Println("Hamster wait is handled by the Codex pre-tool hook. Outside Codex, pass --session.")
+		return nil
+	}
+	if flags.NArg() != 1 {
+		return errors.New("usage: hamster wait --session SESSION CHILD_RUN_ID")
+	}
+	home, err := resolveHome(*homeFlag)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, home)
+	if err != nil {
+		return err
+	}
+	var current store.Run
+	if err := client.Call(ctx, requestID(), "run.current", map[string]string{"session_id": *session, "agent_id": *agent}, &current); err != nil {
+		return err
+	}
+	var waited store.WaitResult
+	if err := client.Call(ctx, requestID(), "process.wait", map[string]string{"parent_run_id": current.ID, "child_run_id": flags.Arg(0)}, &waited); err != nil {
+		return err
+	}
+	return printJSON(waited)
+}
+
 func killCommand(ctx context.Context, arguments []string) error {
 	flags := flag.NewFlagSet("kill", flag.ContinueOnError)
 	session := flags.String("session", "", "Codex session ID for an explicit kill")
@@ -554,5 +637,5 @@ func requestID() string {
 }
 
 func usageError() error {
-	return errors.New("usage: hamster <init|run|kill|status|inspect|trace|hook|daemon|version>")
+	return errors.New("usage: hamster <init|run|exec|wait|kill|status|inspect|trace|hook|daemon|version>")
 }

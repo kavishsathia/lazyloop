@@ -3,12 +3,14 @@ package daemon
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"hamster/internal/control"
@@ -141,6 +143,44 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 		if err = json.Unmarshal(request.Params, &params); err == nil {
 			result, err = s.store.KillCurrentRun(ctx, params.SessionID, params.AgentID, params.Reason)
 		}
+	case "process.fork":
+		var params struct {
+			ParentRunID  string `json:"parent_run_id"`
+			ChildAgentID string `json:"child_agent_id"`
+			ForkKey      string `json:"fork_key"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.ForkRun(ctx, params.ParentRunID, params.ChildAgentID, params.ForkKey)
+		}
+	case "process.exec":
+		var params struct {
+			RunID     string          `json:"run_id"`
+			Machine   ir.Machine      `json:"machine"`
+			Variables json.RawMessage `json:"variables,omitempty"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			var executed *store.Run
+			executed, err = s.store.ExecRun(ctx, params.RunID, params.Machine, params.Variables)
+			if err == nil {
+				result, err = s.runner.Start(ctx, executed.ID)
+			}
+		}
+	case "process.wait":
+		var params struct {
+			ParentRunID string `json:"parent_run_id"`
+			ChildRunID  string `json:"child_run_id"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.WaitRun(ctx, params.ParentRunID, params.ChildRunID)
+		}
+	case "process.return":
+		var params struct {
+			RunID string          `json:"run_id"`
+			Value json.RawMessage `json:"value"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.ReturnRun(ctx, params.RunID, params.Value)
+		}
 	case "trace.start":
 		var params struct {
 			Name              string `json:"name"`
@@ -177,14 +217,32 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 			if err != nil {
 				break
 			}
-			if isControl && params.Event.EventName == "PreToolUse" {
+			if params.Event.EventName == "SubagentStart" {
+				var child *store.Run
+				child, err = s.store.ClaimNextFork(ctx, params.Event.SessionID, params.Event.AgentID)
+				if err == sql.ErrNoRows {
+					err = nil
+					result = hook.Decision{Permission: "allow", Context: "No pending Hamster fork is associated with this subagent."}
+				} else if err == nil {
+					result = hook.Decision{Permission: "allow", Tracked: true, RunID: child.ID, Context: fmt.Sprintf("Hamster bound this Codex subagent to forked run %s.", child.ID)}
+				}
+			} else if isControl && params.Event.EventName == "PreToolUse" {
 				result, err = control.RegisterFromHook(ctx, s.store, s.runner, params.Event, command)
 			} else if isControl {
 				result = hook.Decision{Permission: "allow"}
 			} else if params.Event.EventName == "PostToolUse" {
 				result, err = s.runner.HandleHook(ctx, params.Event)
 			} else {
-				result, err = hook.NewEngine(s.store).Decide(ctx, params.Event)
+				var decision hook.Decision
+				decision, err = hook.NewEngine(s.store).Decide(ctx, params.Event)
+				if err == nil && params.Event.EventName == "PreToolUse" && strings.EqualFold(params.Event.ToolName, "collaborationspawn_agent") && decision.Permission == "allow" && decision.Tracked {
+					var child *store.Run
+					child, err = s.store.PrepareFork(ctx, decision.RunID, params.Event.RequestID())
+					if err == nil {
+						decision.Context = fmt.Sprintf("Hamster prepared forked run %s; it will bind when the Codex subagent starts.", child.ID)
+					}
+				}
+				result = decision
 			}
 			if err == nil {
 				after := s.traceSnapshot(ctx, params.Event)

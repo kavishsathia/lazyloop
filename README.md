@@ -54,9 +54,22 @@ hamster status --session test-session
 Runtime state is owned by one per-user daemon in `~/.hamster/hamster.db`. The
 current bootstrap supports persistent `goal`, `flow`, nested loops, `foreach`,
 prospective time and attempt limits, `allow`/`disallow`, exact `bash.run`
-steps, and independent `bash.check` verifiers. Native provider integrations
-and fork/exec/wait are intentionally left for Hamster-supervised follow-up
-work.
+steps, independent `bash.check` verifiers, and the first process kernel.
+
+When a bound Codex agent spawns a subagent, Hamster snapshots the complete run
+at the spawn boundary and binds the new `agent_id` on `SubagentStart`. A child
+can replace its inherited machine without changing process identity, and its
+parent can wait durably for the structured result:
+
+```sh
+hamster exec child-workflow
+hamster wait <child-run-id>
+```
+
+Normal loop `return` completes the child, clears its binding, and wakes a
+waiting parent. `exec` clears the old machine stack and machine-local limits;
+`wait` currently accepts direct children. Simultaneous pending subagents use
+observed start order until the fork-token correlation protocol is implemented.
 
 ## Codex trace fixtures
 

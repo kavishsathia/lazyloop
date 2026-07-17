@@ -95,6 +95,12 @@ func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decisio
 	}
 	_, err = r.store.ApplyEvent(ctx, event.RequestID(), event.EventName, payload,
 		store.EventDecision{Decision: "allow"}, expectedState, run)
+	if err != nil {
+		return decision, err
+	}
+	if run.Status == "complete" {
+		err = r.store.FinalizeRun(ctx, run.ID)
+	}
 	return decision, err
 }
 
@@ -117,6 +123,11 @@ func (r *Runner) Start(ctx context.Context, runID string) (*store.Run, error) {
 	run.Variables, _ = json.Marshal(environment)
 	if err := r.store.UpdateRun(ctx, expected, run); err != nil {
 		return nil, err
+	}
+	if run.Status == "complete" {
+		if err := r.store.FinalizeRun(ctx, run.ID); err != nil {
+			return nil, err
+		}
 	}
 	return run, nil
 }
