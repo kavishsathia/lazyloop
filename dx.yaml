@@ -1,0 +1,261 @@
+schema_version: 1
+
+document:
+  name: "Hamster zero-to-first-project developer experience"
+  status: "product vision with implementation mapping"
+  audience: "A person with a new computer, no programming experience, and no GitHub account"
+  outcome: "The person uses Codex through a Hamster-enforced loop, verifies the result, and publishes a private GitHub repository"
+
+experience_contract:
+  human_is_responsible_for:
+    - "Choosing what to build"
+    - "Signing into OpenAI and GitHub"
+    - "Reviewing project hook trust prompts"
+    - "Approving security-sensitive or external actions"
+    - "Responding when Hamster reports an escalation"
+  codex_is_responsible_for:
+    - "Authoring or selecting the Hamster loop"
+    - "Calling hamster run before beginning work"
+    - "Writing code and invoking developer tools"
+    - "Explaining failures in beginner-friendly language"
+    - "Creating commits and proposing publication"
+  hamster_is_responsible_for:
+    - "Binding each Codex session and agent to a run"
+    - "Enforcing permitted and forbidden actions at hook boundaries"
+    - "Forking state for subagents"
+    - "Running independent verification steps"
+    - "Stopping only when verification succeeds, a limit is exceeded, or human input is required"
+  success_should_not_require:
+    - "Writing a .hmstr file by hand"
+    - "Editing JSON hook configuration"
+    - "Understanding Git branches, SQLite, daemons, or state machines"
+    - "Creating a GitHub access token manually"
+
+journey:
+  - id: "01-openai-account"
+    title: "Get access to Codex"
+    actor: "human"
+    surface: "web browser"
+    actions:
+      - "Create or sign into an OpenAI account"
+      - "Choose a Codex-capable plan if the account does not already have access"
+    completion_signal: "The person can sign into Codex"
+    product_status: "external prerequisite"
+
+  - id: "02-install-foundation"
+    title: "Install the three prerequisites"
+    actor: "human"
+    surface: "operating-system installers"
+    actions:
+      - "Install Git"
+      - "Install the current Node.js LTS release, which includes npm and npx"
+      - "Install Codex and sign in with the OpenAI account"
+    validation:
+      command: "git --version && node --version && npx --version && codex --version"
+      run_by: "Hamster preflight in the target experience; human during bootstrap today"
+      expected: "All four programs print a version"
+    remediation: "Show one missing prerequisite at a time with an official installer link and a Retry button or command"
+    product_status: "manual today; guided installer is planned"
+
+  - id: "03-create-github-account"
+    title: "Create a GitHub identity"
+    actor: "human"
+    surface: "web browser"
+    actions:
+      - "Create a GitHub account"
+      - "Verify the email address"
+      - "Enable a passkey or two-factor authentication"
+      - "Keep the first repository private unless the person deliberately chooses public"
+    completion_signal: "The GitHub account can be used in a browser"
+    product_status: "external prerequisite"
+
+  - id: "04-authenticate-github"
+    title: "Connect the computer to GitHub"
+    actor: "human with guided prompts"
+    surface: "terminal and web browser"
+    actions:
+      - "Install GitHub CLI using its operating-system installer"
+      - "Authenticate through the browser"
+    commands:
+      - "gh auth login"
+      - "gh auth setup-git"
+    interaction: "Choose GitHub.com, HTTPS, and browser-based login; never ask the beginner to create or paste a token"
+    validation:
+      command: "gh auth status"
+      expected: "GitHub reports the signed-in account"
+    configuration:
+      - "Ask for the person's display name and configure git user.name"
+      - "Offer the GitHub no-reply email address for git user.email"
+    product_status: "GitHub CLI is manual today; hamster doctor guidance is planned"
+
+  - id: "05-create-project"
+    title: "Create the first local project"
+    actor: "human"
+    surface: "terminal"
+    commands:
+      - "mkdir hello-hamster"
+      - "cd hello-hamster"
+      - "git init"
+      - "npx hamster init"
+    hamster_init_should:
+      - "Confirm that Git, Codex, and the Hamster runtime are usable"
+      - "Create .hamster/scripts and a commented starter loop"
+      - "Create or safely merge .codex/hooks.json"
+      - "Pin the Hamster runtime used by the hooks"
+      - "Add private runtime artifacts to .gitignore"
+      - "Start or locate the per-user Hamster daemon"
+      - "Explain the Codex hook trust and project reload step"
+      - "Print exactly one next command: codex"
+    visible_result: "Ready. Open this folder with Codex by running: codex"
+    product_status: "init and hook merging exist; package distribution, starter loop, pinning, .gitignore, and doctor checks are planned"
+
+  - id: "06-trust-project-hooks"
+    title: "Allow Hamster to supervise Codex"
+    actor: "human"
+    surface: "Codex"
+    actions:
+      - "Run codex from the project directory"
+      - "Review and trust the repository hook definition when Codex asks"
+      - "Reload or reopen the project if Codex requires it after hook installation"
+    explanation_shown_to_human: "These hooks let Hamster check each supported Codex action against the active workflow. Trust only the hooks in this project."
+    failure_behavior: "Fail closed: hamster run must refuse to register an unbound run if the registration hook was not observed"
+    product_status: "hook installation exists; guided trust confirmation is planned"
+
+  - id: "07-request-first-project"
+    title: "Describe the desired result in ordinary language"
+    actor: "human"
+    surface: "Codex conversation"
+    example_prompt: "Build me a small personal homepage that runs on my computer. Use Hamster to supervise the work, test it, and explain how I can see it."
+    human_does_not_need_to_specify:
+      - "Programming language"
+      - "File layout"
+      - "Test command"
+      - "Hamster syntax"
+    product_status: "supported as a Codex interaction"
+
+  - id: "08-author-and-start-loop"
+    title: "Codex creates and registers the workflow"
+    actor: "codex"
+    surface: "Codex tool calls observed by Hamster hooks"
+    actions:
+      - "Inspect the empty repository and available tools"
+      - "Write or adapt .hamster/scripts/first-project.hmstr"
+      - "Include prospective time and attempt limits"
+      - "Include independent checks for tests and the requested outcome"
+      - "Run hamster run first-project before writing product code"
+    registration:
+      mapping: "(codex_session_id, codex_agent_id) -> hamster_run_id -> state_machine"
+      behavior: "The pre-tool hook binds the calling Codex agent; the CLI transports the registered operation and must not silently succeed without the hook handshake"
+    visible_result: "Hamster reports the run ID, active loop, current step, and limits in plain language"
+    product_status: "run registration exists; automatic loop authoring conventions and handshake hardening remain planned"
+
+  - id: "09-build-under-supervision"
+    title: "Codex builds while Hamster enforces the loop"
+    actor: "codex and hamster"
+    surface: "hands-off execution"
+    lifecycle:
+      - "Codex performs the next allowed step"
+      - "Hamster observes supported tool calls through Codex hooks"
+      - "A subagent receives a fork of the parent's complete machine and stack with a new run binding"
+      - "Hamster records transitions and evidence in the central WAL database"
+      - "Hamster runs verify steps independently from the agent's claims"
+      - "The flow repeats until every verification passes or a limit terminates it"
+    human_experience: "The person watches progress but does not repeatedly remind Codex to test, retry, or inspect status"
+    product_status: "core loops, hooks, persistence, limits, and verification exist; automatic subagent fork/exec/wait remains planned"
+
+  - id: "10-handle-escalations"
+    title: "Ask the human only when a decision is genuinely needed"
+    actor: "hamster through codex"
+    surface: "Codex conversation"
+    escalation_examples:
+      - "A download, credential, payment, or public network action needs approval"
+      - "The requested behavior is ambiguous in a way that changes the product"
+      - "A time, cost, or attempt limit was reached"
+      - "A required tool is unavailable"
+      - "Verification repeatedly fails with no safe next transition"
+    message_format:
+      - "What Hamster was trying to achieve"
+      - "What evidence failed"
+      - "What limit or policy stopped progress"
+      - "One recommended choice in non-technical language"
+    product_status: "partially supported; beginner-facing remediation catalog is planned"
+
+  - id: "11-review-result"
+    title: "See and accept the finished project"
+    actor: "human"
+    surface: "Codex conversation and local application or browser"
+    hamster_completion_requires:
+      - "All flow or goal verifications pass"
+      - "The run reaches a terminal state"
+      - "Verification evidence is persisted"
+    codex_summary:
+      - "What was built"
+      - "How to open it"
+      - "What Hamster verified"
+      - "Any remaining limitations"
+    useful_commands:
+      - "hamster status"
+      - "hamster inspect <run-id>"
+    product_status: "status and inspect exist; polished evidence presentation is planned"
+
+  - id: "12-save-and-publish"
+    title: "Save the work privately on GitHub"
+    actor: "codex with human approval"
+    surface: "Codex tool calls and GitHub"
+    actions:
+      - "Codex reviews the diff and excludes credentials or machine-local files"
+      - "Codex creates the first Git commit"
+      - "Codex asks permission before creating the external repository"
+      - "After approval, Codex creates a private GitHub repository and pushes the branch"
+    target_command: "gh repo create hello-hamster --private --source=. --remote=origin --push"
+    visible_result: "Codex provides the GitHub repository link and confirms that it is private"
+    product_status: "uses Git and GitHub CLI today; native git and GitHub goal primitives are planned"
+
+beginner_failure_ux:
+  - condition: "npx hamster is not found"
+    response: "Explain that Node.js is missing or outdated, link to the official LTS installer, and rerun only the preflight check"
+  - condition: "Codex hooks are not trusted or not firing"
+    response: "Do not start a run. Point to the exact Codex trust action, then validate with a harmless hook handshake"
+  - condition: "GitHub authentication is missing"
+    response: "Keep all work local and safe. Offer browser login; never block coding merely because publishing is unavailable"
+  - condition: "A verification fails"
+    response: "Keep the loop active and show the failed check as evidence, not as a claim that the entire project failed"
+  - condition: "A limit is exceeded"
+    response: "Stop automatically, preserve the run and files, and ask whether to inspect, extend the limit, or end the run"
+  - condition: "Codex version changes"
+    response: "Run hook conformance checks against fixtures stored under the exact Codex version before claiming full support"
+
+acceptance_test:
+  setup: "A clean supported computer with no developer tools, no GitHub account, and a Codex-capable OpenAI account"
+  pass_conditions:
+    - "The person reaches a running Hamster-supervised Codex session by following only visible instructions"
+    - "The person never edits configuration or loop syntax manually"
+    - "Codex calls hamster run before changing product files"
+    - "Hamster independently observes successful verification"
+    - "The project survives restarting Codex and the computer"
+    - "The final repository is private and contains no Hamster runtime database or credentials"
+    - "Every failure offers a concrete recovery action without assuming programming knowledge"
+
+implementation_map:
+  available_now:
+    - "Native Go CLI with init, run, status, inspect, and trace commands"
+    - "Safe merge of repository Codex hooks"
+    - "Per-user daemon with a central SQLite database in WAL mode"
+    - "Persistent goal, flow, nested-loop, and foreach execution"
+    - "Prospective attempt and time limits"
+    - "Allow and disallow policies for supported hook boundaries"
+    - "Independent bash.check verification"
+    - "Versioned, sanitized Codex trace capture and replay"
+  next_dx_slice:
+    - "Publish and pin the npx distribution"
+    - "Add hamster doctor with machine-readable preflight and friendly remediation"
+    - "Seed a starter loop during init"
+    - "Add .gitignore management and runtime-file privacy checks"
+    - "Add the fail-closed registration handshake"
+    - "Teach Codex the default loop-authoring and run-first convention"
+  later_integrations:
+    - "Git as typed operations and verifiable predicates"
+    - "GitHub account, repository, issue, and pull-request workflows"
+    - "Docker lifecycle and health predicates"
+    - "Codex subagent fork, exec, wait, and return semantics"
+    - "LSP diagnostics as typed verification evidence"
