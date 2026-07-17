@@ -90,6 +90,24 @@ The default listener is `127.0.0.1:7331`. Use
 `hamster daemon serve --http 127.0.0.1:0` when an ephemeral port is preferable;
 the resolved URL is still available through `hamster ui`.
 
+## Language and integration reference
+
+Hamster ships an offline reference catalog. It records syntax, preconditions,
+postconditions, guarantee levels, verification evidence, stable failures, and
+tested examples for every current language and process primitive:
+
+```sh
+hamster man fork
+hamster man --search "child process"
+hamster man --list
+```
+
+The separately hosted documentation website is generated from that same
+catalog; it is not part of the runtime daemon or observability console. Source
+and the Astro + Starlight adapter live under `docs/`. A deployment supplies its
+public origin through `SITE_URL` and builds the static site with
+`pnpm --dir docs/site run build`.
+
 ## Codex trace fixtures
 
 Hamster can record the hook stream directly from Codex. Inside a Codex session:

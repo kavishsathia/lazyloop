@@ -21,8 +21,8 @@ flow build_reference {
   step website = goal {
     allow "apply_patch";
     allow "bash";
-    verify starlight_builds = bash.check("pnpm --dir docs/site run build");
-    verify docs_command_works = bash.check("go run ./cmd/hamster docs --print-url >/dev/null");
+    verify starlight_builds = bash.check("SITE_URL=https://docs.example.invalid pnpm --dir docs/site run build");
+    verify reference_pages_exist = bash.check("test -f docs/site/dist/reference/process-fork/index.html");
     return "documentation website ready";
   };
 

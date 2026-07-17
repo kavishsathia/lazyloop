@@ -2,7 +2,7 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
 export default defineConfig({
-  site: 'https://docs.hamster.dev',
+  site: process.env.SITE_URL,
   integrations: [
     starlight({
       title: 'Hamster',
@@ -10,9 +10,6 @@ export default defineConfig({
       customCss: ['./src/styles/reference.css'],
       social: [],
       lastUpdated: true,
-      editLink: {
-        baseUrl: 'https://github.com/hamster-dev/hamster/edit/main/docs/',
-      },
       sidebar: [
         {
           label: 'Start here',
