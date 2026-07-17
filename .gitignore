@@ -1,0 +1,6 @@
+.DS_Store
+.hamster/hamster.db*
+.hamster/run/
+bin/
+coverage.out
+
