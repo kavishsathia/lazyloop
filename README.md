@@ -6,15 +6,21 @@
   <p>A small language and runtime for enforceable, resource-bounded Codex loops.</p>
 
   <p>
+    <a href="https://github.com/kavishsathia/hamster/actions/workflows/ci.yml"><img src="https://github.com/kavishsathia/hamster/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
     <img src="https://img.shields.io/badge/status-experimental-C56A32?style=flat-square" alt="Status: experimental" />
     <img src="https://img.shields.io/badge/Go-1.25-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.25" />
     <img src="https://img.shields.io/badge/runtime-Codex-22272E?style=flat-square" alt="Runtime: Codex" />
     <img src="https://img.shields.io/badge/docs-Starlight-5B45D6?style=flat-square&logo=astro&logoColor=white" alt="Documentation: Starlight" />
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-D22128?style=flat-square&logo=apache" alt="License: Apache 2.0" /></a>
   </p>
 </div>
 
 The project is bootstrapping its trusted kernel. Design decisions and live
 Codex hook findings are recorded in [`discussions`](discussions/).
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), the
+[Code of Conduct](CODE_OF_CONDUCT.md), and the [Security policy](SECURITY.md)
+before opening an issue or pull request.
 
 ## Development
 

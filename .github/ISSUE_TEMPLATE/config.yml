@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/kavishsathia/hamster/security/advisories/new
+    about: Send security-sensitive reports privately.
+  - name: Support guide
+    url: https://github.com/kavishsathia/hamster/blob/main/SUPPORT.md
+    about: Choose the right support path and collect useful diagnostics.

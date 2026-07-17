@@ -1,0 +1,52 @@
+name: Feature request
+description: Propose a language, runtime, integration, or DX improvement.
+title: "[Feature]: "
+labels: [enhancement, needs-triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or failure mode cannot be expressed or enforced today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Show syntax or a concrete agent workflow when useful.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary area
+      options:
+        - Language
+        - Compiler or state machine
+        - Codex hooks
+        - Process kernel
+        - Integration primitive
+        - CLI or developer experience
+        - Observability
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Contract
+      description: Describe preconditions, postconditions, termination, evidence, and enforcement limits.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This proposal is Codex-specific or explains why the scope should expand.
+          required: true

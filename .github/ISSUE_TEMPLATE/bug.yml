@@ -1,0 +1,61 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Hamster.
+title: "[Bug]: "
+labels: [bug, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. For vulnerabilities, stop here and use the private reporting link in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Hamster version or commit
+      placeholder: v0.x.y or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: codex
+    attributes:
+      label: Codex distribution and version
+      placeholder: codex-cli 0.144.5
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, architecture, Go version, and other relevant details.
+      placeholder: macOS 15, arm64, Go 1.25
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include a minimal .hmstr script and exact commands when possible.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and evidence
+      description: Include sanitized logs, diagnostics, or a versioned trace fixture.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed secrets, private source code, credentials, and unsanitized Codex transcripts.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
