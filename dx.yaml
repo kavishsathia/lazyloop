@@ -247,6 +247,7 @@ implementation_map:
     - "Independent bash.check verification"
     - "Versioned, sanitized Codex trace capture and replay"
     - "Automatic Codex subagent fork binding plus process exec, wait, and structured return"
+    - "Loopback-only runtime console for sessions, process trees, state position, hook decisions, timing, and verification evidence"
   next_dx_slice:
     - "Publish and pin the npx distribution"
     - "Add hamster doctor with machine-readable preflight and friendly remediation"

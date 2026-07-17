@@ -71,6 +71,25 @@ waiting parent. `exec` clears the old machine stack and machine-local limits;
 `wait` currently accepts direct children. Simultaneous pending subagents use
 observed start order until the fork-token correlation protocol is implemented.
 
+## Runtime observability
+
+The daemon hosts a local operational console on a loopback-only HTTP listener.
+Print its current address with:
+
+```sh
+hamster ui
+```
+
+The console shows every known Codex session and its agent process tree. A run
+detail view exposes the current machine and state, iteration, nested stack,
+activated limits, recent hook decisions, paired tool durations, and persisted
+verification evidence. It polls the local daemon directly; no runtime data is
+sent to an external service and no separate frontend process is required.
+
+The default listener is `127.0.0.1:7331`. Use
+`hamster daemon serve --http 127.0.0.1:0` when an ephemeral port is preferable;
+the resolved URL is still available through `hamster ui`.
+
 ## Codex trace fixtures
 
 Hamster can record the hook stream directly from Codex. Inside a Codex session:
