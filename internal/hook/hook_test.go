@@ -27,11 +27,23 @@ func setupRun(t *testing.T, source string) (*Engine, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { state.Close() })
-	_, err = state.CreateRun(context.Background(), store.CreateRunParams{
+	run, err := state.CreateRun(context.Background(), store.CreateRunParams{
 		WorkspaceRoot: "/repo", CodexSessionID: "session", Machine: compiled.Machines[0],
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Runtime-owned setup states are normally consumed by Runner.Start. Hook
+	// unit tests position the run directly at its first agent-owned state.
+	for _, machineState := range run.Machine.States {
+		if machineState.Executor == "agent" {
+			expected := run.StateID
+			run.StateID = machineState.ID
+			if err := state.UpdateRun(context.Background(), expected, run); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
 	}
 	return NewEngine(state), "session"
 }

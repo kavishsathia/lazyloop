@@ -63,8 +63,20 @@ func (c *compiler) compileLoop(loop language.Loop) *ir.Machine {
 
 func (c *compiler) compileStatements(machine *ir.Machine, statements []language.Statement, goal bool) {
 	if goal {
+		// Goal constraints are active before Codex is given an agent-work state.
+		// There are no ordered agent steps in a goal, so prospective limits begin
+		// at goal entry rather than after the first arbitrary tool call.
+		for _, statement := range statements {
+			switch node := statement.(type) {
+			case *language.Limit:
+				value := c.compileExpression(node.Value)
+				machine.States = append(machine.States, ir.State{Kind: ir.StateLimit, Executor: ir.ExecutorControl, Name: node.Kind, Limit: &ir.Limit{Kind: node.Kind, Value: value}, Span: node.Span})
+			case *language.Policy:
+				value := c.compileExpression(node.Value)
+				machine.States = append(machine.States, ir.State{Kind: ir.StatePolicy, Executor: ir.ExecutorControl, Policy: &ir.Policy{Allow: node.Allow, Value: value}, Span: node.Span})
+			}
+		}
 		machine.States = append(machine.States, ir.State{
-			ID:       "state_0",
 			Kind:     ir.StateAgentWork,
 			Executor: ir.ExecutorAgent,
 			Name:     "work",
@@ -94,9 +106,15 @@ func (c *compiler) compileStatements(machine *ir.Machine, statements []language.
 			expression := c.compileExpression(node.Check)
 			machine.States = append(machine.States, ir.State{Kind: ir.StateVerify, Executor: ir.ExecutorRuntime, Name: node.Name, Expression: &expression, Span: node.Span})
 		case *language.Limit:
+			if goal {
+				continue
+			}
 			value := c.compileExpression(node.Value)
 			machine.States = append(machine.States, ir.State{Kind: ir.StateLimit, Executor: ir.ExecutorControl, Name: node.Kind, Limit: &ir.Limit{Kind: node.Kind, Value: value}, Span: node.Span})
 		case *language.Policy:
+			if goal {
+				continue
+			}
 			value := c.compileExpression(node.Value)
 			machine.States = append(machine.States, ir.State{Kind: ir.StatePolicy, Executor: ir.ExecutorControl, Policy: &ir.Policy{Allow: node.Allow, Value: value}, Span: node.Span})
 		case *language.Return:

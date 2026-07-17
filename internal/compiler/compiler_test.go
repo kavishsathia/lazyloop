@@ -47,8 +47,8 @@ func TestCompileGoalStartsWithAgentWork(t *testing.T) {
   return git.current_commit();
 }`)
 	machine := program.Machines[0]
-	if machine.States[0].Kind != ir.StateAgentWork {
-		t.Fatalf("first state = %q, want agent_work", machine.States[0].Kind)
+	if machine.States[0].Kind != ir.StatePolicy || machine.States[1].Kind != ir.StateAgentWork {
+		t.Fatalf("initial states = %q, %q, want policy then agent_work", machine.States[0].Kind, machine.States[1].Kind)
 	}
 	if machine.States[2].Kind != ir.StateVerify {
 		t.Fatalf("verification state = %q", machine.States[2].Kind)

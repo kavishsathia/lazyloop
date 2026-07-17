@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS runs (
   status TEXT NOT NULL,
   iteration INTEGER NOT NULL DEFAULT 0,
   variables_json BLOB NOT NULL DEFAULT '{}',
+  stack_json BLOB NOT NULL DEFAULT '[]',
   result_json BLOB,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -143,18 +144,29 @@ type CreateRunParams struct {
 }
 
 type Run struct {
-	ID          string          `json:"id"`
-	ProcessID   string          `json:"process_id"`
-	ParentRunID string          `json:"parent_run_id,omitempty"`
-	MachineName string          `json:"machine_name,omitempty"`
+	ID            string          `json:"id"`
+	ProcessID     string          `json:"process_id"`
+	ParentRunID   string          `json:"parent_run_id,omitempty"`
+	MachineName   string          `json:"machine_name,omitempty"`
+	Machine       ir.Machine      `json:"machine"`
+	StateID       string          `json:"state_id"`
+	Status        string          `json:"status"`
+	Iteration     int             `json:"iteration"`
+	Variables     json.RawMessage `json:"variables"`
+	Stack         []Frame         `json:"stack"`
+	Result        json.RawMessage `json:"result,omitempty"`
+	WorkspaceRoot string          `json:"workspace_root"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
+}
+
+type Frame struct {
 	Machine     ir.Machine      `json:"machine"`
-	StateID     string          `json:"state_id"`
-	Status      string          `json:"status"`
+	ResumeState string          `json:"resume_state"`
+	Kind        string          `json:"kind"`
+	StepName    string          `json:"step_name,omitempty"`
 	Iteration   int             `json:"iteration"`
 	Variables   json.RawMessage `json:"variables"`
-	Result      json.RawMessage `json:"result,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
 func (s *Store) CreateRun(ctx context.Context, params CreateRunParams) (*Run, error) {
@@ -216,8 +228,10 @@ VALUES(?, ?, NULLIF(?, ''), ?, ?, ?, 'running', ?, ?)`, runID, processID, params
 }
 
 func (s *Store) GetRun(ctx context.Context, runID string) (*Run, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, process_id, COALESCE(parent_run_id, ''), COALESCE(machine_name, ''), machine_json,
-state_id, status, iteration, variables_json, result_json, created_at, updated_at FROM runs WHERE id = ?`, runID)
+	row := s.db.QueryRowContext(ctx, `SELECT r.id, r.process_id, COALESCE(r.parent_run_id, ''), COALESCE(r.machine_name, ''), r.machine_json,
+r.state_id, r.status, r.iteration, r.variables_json, r.stack_json, r.result_json, r.created_at, r.updated_at, w.root
+FROM runs r JOIN processes p ON p.id=r.process_id JOIN sessions s ON s.id=p.session_id JOIN workspaces w ON w.id=s.workspace_id
+WHERE r.id = ?`, runID)
 	return scanRun(row)
 }
 
@@ -226,10 +240,11 @@ func (s *Store) FindCurrentRun(ctx context.Context, codexSessionID, agentID stri
 		agentID = RootAgent
 	}
 	row := s.db.QueryRowContext(ctx, `SELECT r.id, r.process_id, COALESCE(r.parent_run_id, ''), COALESCE(r.machine_name, ''), r.machine_json,
-r.state_id, r.status, r.iteration, r.variables_json, r.result_json, r.created_at, r.updated_at
+	r.state_id, r.status, r.iteration, r.variables_json, r.stack_json, r.result_json, r.created_at, r.updated_at, w.root
 FROM runs r
 JOIN processes p ON p.current_run_id = r.id
 JOIN sessions s ON s.id = p.session_id
+JOIN workspaces w ON w.id = s.workspace_id
 WHERE s.codex_session_id = ? AND p.agent_id = ?`, codexSessionID, agentID)
 	return scanRun(row)
 }
@@ -242,13 +257,17 @@ func scanRun(row scanner) (*Run, error) {
 	var run Run
 	var machineJSON []byte
 	var variables string
+	var stack string
 	var result []byte
 	var createdAt, updatedAt string
 	if err := row.Scan(&run.ID, &run.ProcessID, &run.ParentRunID, &run.MachineName, &machineJSON,
-		&run.StateID, &run.Status, &run.Iteration, &variables, &result, &createdAt, &updatedAt); err != nil {
+		&run.StateID, &run.Status, &run.Iteration, &variables, &stack, &result, &createdAt, &updatedAt, &run.WorkspaceRoot); err != nil {
 		return nil, err
 	}
 	run.Variables = json.RawMessage(variables)
+	if err := json.Unmarshal([]byte(stack), &run.Stack); err != nil {
+		return nil, fmt.Errorf("decode machine stack: %w", err)
+	}
 	if err := json.Unmarshal(machineJSON, &run.Machine); err != nil {
 		return nil, fmt.Errorf("decode machine: %w", err)
 	}
@@ -261,6 +280,79 @@ func scanRun(row scanner) (*Run, error) {
 		return nil, err
 	}
 	return &run, nil
+}
+
+func (s *Store) UpdateRun(ctx context.Context, expectedState string, run *Run) error {
+	machineJSON, err := json.Marshal(run.Machine)
+	if err != nil {
+		return err
+	}
+	stackJSON, err := json.Marshal(run.Stack)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE runs SET machine_name=?, machine_json=?, state_id=?, status=?, iteration=?,
+variables_json=?, stack_json=?, result_json=?, updated_at=? WHERE id=? AND state_id=?`,
+		run.Machine.Name, machineJSON, run.StateID, run.Status, run.Iteration, []byte(run.Variables), stackJSON,
+		[]byte(run.Result), formatTime(time.Now().UTC()), run.ID, expectedState)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return errors.New("run changed concurrently")
+	}
+	return nil
+}
+
+func (s *Store) ApplyEvent(ctx context.Context, requestID, kind string, payload json.RawMessage, decision EventDecision, expectedState string, run *Run) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	decisionJSON, err := json.Marshal(decision)
+	if err != nil {
+		return false, err
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO events(request_id, run_id, kind, payload_json, decision_json, created_at)
+VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO NOTHING`, requestID, run.ID, kind, []byte(payload), decisionJSON, formatTime(time.Now().UTC()))
+	if err != nil {
+		return false, err
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if inserted == 0 {
+		return true, nil
+	}
+	machineJSON, err := json.Marshal(run.Machine)
+	if err != nil {
+		return false, err
+	}
+	stackJSON, err := json.Marshal(run.Stack)
+	if err != nil {
+		return false, err
+	}
+	result, err = tx.ExecContext(ctx, `UPDATE runs SET machine_name=?, machine_json=?, state_id=?, status=?, iteration=?,
+variables_json=?, stack_json=?, result_json=?, updated_at=? WHERE id=? AND state_id=?`,
+		run.Machine.Name, machineJSON, run.StateID, run.Status, run.Iteration, []byte(run.Variables), stackJSON,
+		[]byte(run.Result), formatTime(time.Now().UTC()), run.ID, expectedState)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if changed != 1 {
+		return false, errors.New("run changed concurrently")
+	}
+	return false, tx.Commit()
 }
 
 type EventDecision struct {
@@ -295,6 +387,18 @@ VALUES(?, NULLIF(?, ''), ?, ?, ?, ?) ON CONFLICT(request_id) DO NOTHING`, reques
 		return EventDecision{}, false, err
 	}
 	return decision, true, nil
+}
+
+func (s *Store) GetEventDecision(ctx context.Context, requestID string) (EventDecision, error) {
+	var payload []byte
+	if err := s.db.QueryRowContext(ctx, `SELECT decision_json FROM events WHERE request_id = ?`, requestID).Scan(&payload); err != nil {
+		return EventDecision{}, err
+	}
+	var decision EventDecision
+	if err := json.Unmarshal(payload, &decision); err != nil {
+		return EventDecision{}, err
+	}
+	return decision, nil
 }
 
 func (s *Store) JournalMode(ctx context.Context) (string, error) {

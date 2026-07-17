@@ -45,6 +45,12 @@ func (e *Engine) Decide(ctx context.Context, event Event) (Decision, error) {
 }
 
 func (e *Engine) authorize(run *store.Run, event Event) Decision {
+	if run.Status == "complete" {
+		return Decision{Permission: "allow"}
+	}
+	if run.Status != "running" {
+		return deny(fmt.Sprintf("Hamster run %s terminated with status %s.", run.ID, run.Status), "Inspect the run result and start or resume an appropriate loop.")
+	}
 	state, ok := findState(run.Machine, run.StateID)
 	if !ok {
 		return deny("Hamster's current state is invalid.", "Inspect the run and repair or terminate it.")

@@ -14,6 +14,7 @@ import (
 	"hamster/internal/hook"
 	"hamster/internal/ir"
 	"hamster/internal/protocol"
+	hamsterruntime "hamster/internal/runtime"
 	"hamster/internal/store"
 )
 
@@ -29,11 +30,12 @@ func DefaultPaths(home string) Paths {
 }
 
 type Server struct {
-	store *store.Store
-	locks sync.Map
+	store  *store.Store
+	locks  sync.Map
+	runner *hamsterruntime.Runner
 }
 
-func New(state *store.Store) *Server { return &Server{store: state} }
+func New(state *store.Store) *Server { return &Server{store: state, runner: hamsterruntime.New(state)} }
 
 func (s *Server) Serve(ctx context.Context, socketPath string) error {
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
@@ -104,10 +106,14 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 	case "run.create":
 		var params CreateRunRequest
 		if err = json.Unmarshal(request.Params, &params); err == nil {
-			result, err = s.store.CreateRun(ctx, store.CreateRunParams{
+			var created *store.Run
+			created, err = s.store.CreateRun(ctx, store.CreateRunParams{
 				WorkspaceRoot: params.WorkspaceRoot, CodexSessionID: params.CodexSessionID,
 				AgentID: params.AgentID, Machine: params.Machine,
 			})
+			if err == nil {
+				result, err = s.runner.Start(ctx, created.ID)
+			}
 		}
 	case "run.get":
 		var params struct {
@@ -119,7 +125,11 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 	case "hook.event":
 		var params hook.HookRequest
 		if err = json.Unmarshal(request.Params, &params); err == nil {
-			result, err = hook.NewEngine(s.store).Decide(ctx, params.Event)
+			if params.Event.EventName == "PostToolUse" {
+				result, err = s.runner.HandleHook(ctx, params.Event)
+			} else {
+				result, err = hook.NewEngine(s.store).Decide(ctx, params.Event)
+			}
 		}
 	default:
 		response.Error = &protocol.Error{Code: "method_not_found", Message: fmt.Sprintf("unknown method %q", request.Method)}
