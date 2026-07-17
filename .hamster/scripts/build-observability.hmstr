@@ -1,0 +1,39 @@
+flow build_observability {
+  limit time 6h;
+  limit attempts 16;
+
+  step branch = bash.run("git switch hamster/observability 2>/dev/null || git switch -c hamster/observability");
+
+  step contract_tests = goal {
+    limit time 1h;
+    limit attempts 8;
+
+    allow apply_patch;
+    allow bash;
+    allow git;
+
+    verify tests_changed = bash.check("git status --porcelain --untracked-files=all | grep -Eq '_test\\.go$'");
+    verify tests_fail_first = bash.check("! go test ./...");
+    return tests_changed && tests_fail_first;
+  };
+
+  step implementation = goal {
+    limit time 5h;
+    limit attempts 30;
+
+    allow apply_patch;
+    allow bash;
+    allow git;
+
+    verify observability_contracts = bash.check("rg -q 'func Test(Observe|Dashboard|HTTP)' internal --glob '*_test.go'");
+    verify embedded_ui = bash.check("test -f internal/observe/web/index.html && test -f internal/observe/web/app.css && test -f internal/observe/web/app.js");
+    verify tests_pass = bash.check("go test ./...");
+    verify vet_passes = bash.check("go vet ./...");
+    verify committed = bash.check("test -z \"$(git status --porcelain)\" && test \"$(git rev-list --count hamster/process-kernel..HEAD)\" -ge 1");
+    return observability_contracts && embedded_ui && tests_pass && vet_passes && committed;
+  };
+
+  verify correct_branch = bash.check("test \"$(git branch --show-current)\" = hamster/observability");
+  verify complete = bash.check("go test ./... && go vet ./...");
+  return implementation;
+}
