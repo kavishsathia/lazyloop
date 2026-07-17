@@ -25,6 +25,16 @@ func (r *Redactor) Redact(payload json.RawMessage) (json.RawMessage, error) {
 }
 
 func (r *Redactor) redactValue(key string, value any) any {
+	if key == "tool_response" {
+		switch typed := value.(type) {
+		case []any:
+			return "$REDACTED_OUTPUT"
+		case string:
+			if len(typed) > 1024 {
+				return "$REDACTED_OUTPUT"
+			}
+		}
+	}
 	switch typed := value.(type) {
 	case map[string]any:
 		result := make(map[string]any, len(typed))
@@ -63,8 +73,10 @@ func (r *Redactor) redactString(key, value string) string {
 		return "$WORKSPACE"
 	case "transcript_path", "agent_transcript_path":
 		return "$TRANSCRIPT"
-	case "prompt", "last_assistant_message":
+	case "prompt", "last_assistant_message", "message":
 		return "$REDACTED"
+	case "token", "password", "secret", "authorization", "api_key", "access_token", "refresh_token":
+		return "$REDACTED_SECRET"
 	}
 	for _, category := range []string{"session", "turn", "agent", "tool", "run", "process"} {
 		for original, alias := range r.aliases[category] {

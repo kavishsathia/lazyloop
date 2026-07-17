@@ -1,0 +1,17 @@
+{
+  "schema": "hamster.trace/v1alpha1",
+  "name": "native-web-search",
+  "scenario": "native-web-search",
+  "source": "live",
+  "codex_distribution": "codex-cli",
+  "codex_version": "0.144.5",
+  "recorded_at": "2026-07-17T05:38:40.154Z",
+  "event_count": 7,
+  "has_decisions": false,
+  "has_state": false,
+  "sanitized": true,
+  "capabilities": [
+    "Bash",
+    "webrun"
+  ]
+}

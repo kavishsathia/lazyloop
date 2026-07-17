@@ -37,3 +37,14 @@ func TestImportAndReplayLegacyCapture(t *testing.T) {
 		t.Fatalf("report = %#v", report)
 	}
 }
+
+func TestRedactorRemovesDelegatedPromptsAndLargeOutputs(t *testing.T) {
+	redactor := NewRedactor()
+	payload, err := redactor.Redact(json.RawMessage(`{"tool_input":{"message":"private task"},"tool_response":[{"text":"large result"}],"token":"secret"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(payload, []byte("private task")) || bytes.Contains(payload, []byte("large result")) || bytes.Contains(payload, []byte(`"secret"`)) {
+		t.Fatalf("sensitive payload survived: %s", payload)
+	}
+}

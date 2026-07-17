@@ -1,0 +1,18 @@
+{
+  "schema": "hamster.trace/v1alpha1",
+  "name": "nested-subagent",
+  "scenario": "nested-subagent",
+  "source": "live",
+  "codex_distribution": "codex-cli",
+  "codex_version": "0.144.5",
+  "recorded_at": "2026-07-17T05:37:07.763Z",
+  "event_count": 25,
+  "has_decisions": false,
+  "has_state": false,
+  "sanitized": true,
+  "capabilities": [
+    "Bash",
+    "collaborationspawn_agent",
+    "collaborationwait_agent"
+  ]
+}
