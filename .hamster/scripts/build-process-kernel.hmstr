@@ -1,0 +1,38 @@
+flow build_process_kernel {
+  limit time 4h;
+  limit attempts 12;
+
+  step branch = bash.run("git switch hamster/process-kernel 2>/dev/null || git switch -c hamster/process-kernel");
+
+  step contract_tests = goal {
+    limit time 45m;
+    limit attempts 6;
+
+    allow apply_patch;
+    allow bash;
+    allow git;
+
+    verify tests_changed = bash.check("git status --porcelain --untracked-files=all | grep -Eq '_test\\.go$'");
+    verify tests_fail_first = bash.check("! go test ./...");
+    return tests_changed && tests_fail_first;
+  };
+
+  step implementation = goal {
+    limit time 3h;
+    limit attempts 20;
+
+    allow apply_patch;
+    allow bash;
+    allow git;
+
+    verify process_contracts = bash.check("rg -q 'func Test(Fork|Exec|Wait|Return)' internal --glob '*_test.go'");
+    verify tests_pass = bash.check("go test ./...");
+    verify vet_passes = bash.check("go vet ./...");
+    verify committed = bash.check("test -z \"$(git status --porcelain)\" && test \"$(git rev-list --count main..HEAD)\" -ge 1");
+    return process_contracts && tests_pass && vet_passes && committed;
+  };
+
+  verify correct_branch = bash.check("test \"$(git branch --show-current)\" = hamster/process-kernel");
+  verify complete = bash.check("go test ./... && go vet ./...");
+  return implementation;
+}
