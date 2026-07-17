@@ -1,0 +1,78 @@
+package language
+
+import "testing"
+
+func TestParseNestedLoopsAndExpressions(t *testing.T) {
+	source := `
+flow build_all {
+  limit attempts 3;
+  step deployments = foreach service in services {
+    flow {
+      step image = docker.build(service.path);
+      verify healthy = docker.healthy(image) == true;
+      return image;
+    }
+  };
+  verify complete = deployments.count == services.count;
+  return deployments;
+}`
+
+	program, diagnostics := Parse(source)
+	if len(diagnostics) != 0 {
+		t.Fatalf("Parse() diagnostics = %v", diagnostics)
+	}
+	if len(program.Loops) != 1 {
+		t.Fatalf("Parse() loops = %d, want 1", len(program.Loops))
+	}
+	flow, ok := program.Loops[0].(*Flow)
+	if !ok {
+		t.Fatalf("Parse() loop type = %T, want *Flow", program.Loops[0])
+	}
+	if flow.Name != "build_all" || len(flow.Statements) != 4 {
+		t.Fatalf("flow = %#v", flow)
+	}
+	step := flow.Statements[1].(*Step)
+	loopValue, ok := step.Value.(*LoopValue)
+	if !ok {
+		t.Fatalf("step value type = %T, want *LoopValue", step.Value)
+	}
+	foreach, ok := loopValue.Loop.(*Foreach)
+	if !ok || foreach.Binding != "service" {
+		t.Fatalf("nested loop = %#v", loopValue.Loop)
+	}
+}
+
+func TestParseGoalPoliciesAndNamedArguments(t *testing.T) {
+	source := `goal fix {
+  allow git;
+  disallow docker;
+  limit time 30m;
+  verify clean = git.diff(scope: "issue").empty;
+  return git.current_commit();
+}`
+	program, diagnostics := Parse(source)
+	if len(diagnostics) != 0 {
+		t.Fatalf("Parse() diagnostics = %v", diagnostics)
+	}
+	goal := program.Loops[0].(*Goal)
+	if len(goal.Statements) != 5 {
+		t.Fatalf("statements = %d, want 5", len(goal.Statements))
+	}
+}
+
+func TestRejectStepInsideGoal(t *testing.T) {
+	_, diagnostics := Parse(`goal bad { step nope = bash.run("false"); }`)
+	if len(diagnostics) == 0 || diagnostics[0].Message != "step is only valid inside flow" {
+		t.Fatalf("diagnostics = %v", diagnostics)
+	}
+}
+
+func TestLexReportsSourcePosition(t *testing.T) {
+	_, diagnostics := Lex("goal {\n  @\n}")
+	if len(diagnostics) != 1 {
+		t.Fatalf("diagnostics = %v", diagnostics)
+	}
+	if diagnostics[0].Span.Start.Line != 2 || diagnostics[0].Span.Start.Column != 3 {
+		t.Fatalf("position = %v, want 2:3", diagnostics[0].Span.Start)
+	}
+}
