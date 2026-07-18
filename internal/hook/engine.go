@@ -118,6 +118,9 @@ func authorizePolicy(machine ir.Machine, event Event) Decision {
 }
 
 func classifyTool(event Event) string {
+	if strings.EqualFold(event.ToolName, "collaborationspawn_agent") || strings.EqualFold(event.ToolName, "spawn_agent") || strings.EqualFold(event.ToolName, "Agent") {
+		return "codex"
+	}
 	if strings.EqualFold(event.ToolName, "Bash") {
 		command := strings.TrimSpace(event.Command())
 		for _, capability := range []string{"git", "docker", "codex"} {

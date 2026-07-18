@@ -36,14 +36,16 @@ snapshot. The child receives a new process and run while cloning:
 - Parent ancestry.
 
 The spawn tool does not expose the future `agent_id`, so the process initially
-uses a private pending identity. `SubagentStart` claims the oldest pending fork
-in that Codex session and replaces the pending identity with the stable child
-`agent_id`. Replayed spawn and start events are idempotent.
+uses a private pending identity. Hamster uses the documented Codex
+`PreToolUse.updatedInput` response to append a one-time `hamster attach` command
+to the child message. `SubagentStart` supplies context but never guesses a
+binding. Until the child presents its token, Hamster quarantines its other tool
+calls. The atomic token claim replaces the pending identity with the stable
+child `agent_id`.
 
-This implements the ordering observed in the Codex 0.144.5 fixture corpus. It
-does not resolve the known ambiguity when multiple parents in one session have
-simultaneous unclaimed forks. That case still needs the documented fork-token
-handshake.
+This removes the ordering assumption from the Codex 0.144.5 fixture corpus.
+Concurrent children may attach in any order, and replaying either spawn or
+attach remains idempotent.
 
 ## Exec
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"hamster/internal/hook"
@@ -151,7 +152,7 @@ func TestKillControlCommandEscapesActiveRun(t *testing.T) {
 	}
 }
 
-func TestForkLifecycleSnapshotsSpawnAndBindsSubagentStart(t *testing.T) {
+func TestForkLifecycleInjectsTokenQuarantinesAndAttachesExactly(t *testing.T) {
 	state, err := store.Open(filepath.Join(t.TempDir(), "hamster.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -165,19 +166,47 @@ func TestForkLifecycleSnapshotsSpawnAndBindsSubagentStart(t *testing.T) {
 	server := New(state)
 	spawn := hook.Event{
 		SessionID: "session-fork", EventName: "PreToolUse", ToolName: "collaborationspawn_agent", ToolUseID: "spawn-1", WorkspaceRoot: "/repo",
-		ToolInput: json.RawMessage(`{"task_name":"child"}`),
+		ToolInput: json.RawMessage(`{"task_name":"child","message":"do the work"}`),
 	}
 	params, _ := json.Marshal(hook.HookRequest{Event: spawn})
 	response := server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "spawn-hook", Method: "hook.event", Params: params})
 	if response.Error != nil {
 		t.Fatalf("spawn hook error = %#v", response.Error)
 	}
+	var spawnDecision hook.Decision
+	if err := json.Unmarshal(response.Result, &spawnDecision); err != nil {
+		t.Fatal(err)
+	}
+	token := forkToken(spawn.RequestID())
+	if !spawnDecision.Tracked || !strings.Contains(string(spawnDecision.UpdatedInput), "hamster attach "+token) {
+		t.Fatalf("spawn decision = %#v", spawnDecision)
+	}
 
 	started := hook.Event{SessionID: "session-fork", AgentID: "agent-child", EventName: "SubagentStart", WorkspaceRoot: "/repo", TurnID: "turn-child"}
 	params, _ = json.Marshal(hook.HookRequest{Event: started})
+	startParams := append(json.RawMessage(nil), params...)
 	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "start-hook", Method: "hook.event", Params: params})
 	if response.Error != nil {
 		t.Fatalf("subagent start error = %#v", response.Error)
+	}
+	if _, err := state.FindCurrentRun(context.Background(), "session-fork", "agent-child"); err != sql.ErrNoRows {
+		t.Fatalf("SubagentStart guessed a fork binding: %v", err)
+	}
+
+	blocked := hook.Event{SessionID: "session-fork", AgentID: "agent-child", EventName: "PreToolUse", ToolName: "Bash", ToolUseID: "before-attach", ToolInput: json.RawMessage(`{"command":"git status"}`)}
+	params, _ = json.Marshal(hook.HookRequest{Event: blocked})
+	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "blocked-hook", Method: "hook.event", Params: params})
+	var blockedDecision hook.Decision
+	if response.Error != nil || json.Unmarshal(response.Result, &blockedDecision) != nil || blockedDecision.Permission != "deny" || !strings.Contains(blockedDecision.Remediation, "hamster attach") {
+		t.Fatalf("quarantine decision = %#v, error = %#v", blockedDecision, response.Error)
+	}
+
+	attachInput, _ := json.Marshal(map[string]string{"command": "hamster attach " + token})
+	attach := hook.Event{SessionID: "session-fork", AgentID: "agent-child", EventName: "PreToolUse", ToolName: "Bash", ToolUseID: "attach", ToolInput: attachInput}
+	params, _ = json.Marshal(hook.HookRequest{Event: attach})
+	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "attach-hook", Method: "hook.event", Params: params})
+	if response.Error != nil {
+		t.Fatalf("attach hook error = %#v", response.Error)
 	}
 	child, err := state.FindCurrentRun(context.Background(), "session-fork", "agent-child")
 	if err != nil {
@@ -187,7 +216,7 @@ func TestForkLifecycleSnapshotsSpawnAndBindsSubagentStart(t *testing.T) {
 		t.Fatalf("forked child = %#v, parent = %#v", child, parent)
 	}
 
-	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "start-hook-replay", Method: "hook.event", Params: params})
+	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "start-hook-replay", Method: "hook.event", Params: startParams})
 	if response.Error != nil {
 		t.Fatalf("replayed subagent start error = %#v", response.Error)
 	}

@@ -45,6 +45,47 @@ func TestForkClonesCompleteRunStateAndBindsChild(t *testing.T) {
 	}
 }
 
+func TestPendingForkTokensAttachOutOfOrderWithoutCrossBinding(t *testing.T) {
+	state := testStore(t)
+	parent, err := state.CreateRun(context.Background(), CreateRunParams{
+		WorkspaceRoot: "/repo", CodexSessionID: "session-token", Machine: testMachine(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := state.PrepareFork(context.Background(), parent.ID, "token-first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := state.PrepareFork(context.Background(), parent.ID, "token-second")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	claimedSecond, err := state.ClaimFork(context.Background(), "session-token", "agent-second", "token-second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimedFirst, err := state.ClaimFork(context.Background(), "session-token", "agent-first", "token-first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimedSecond.ID != second.ID || claimedFirst.ID != first.ID {
+		t.Fatalf("tokens crossed: first=%s/%s second=%s/%s", first.ID, claimedFirst.ID, second.ID, claimedSecond.ID)
+	}
+	if _, err := state.ClaimFork(context.Background(), "session-token", "agent-first", "token-second"); err == nil {
+		t.Fatal("agent rebound to a different token")
+	}
+	replayed, err := state.ClaimFork(context.Background(), "session-token", "agent-second", "token-second")
+	if err != nil || replayed.ID != second.ID {
+		t.Fatalf("idempotent claim = %#v, %v", replayed, err)
+	}
+	pending, err := state.HasPendingFork(context.Background(), "session-token")
+	if err != nil || pending {
+		t.Fatalf("pending = %v, error = %v", pending, err)
+	}
+}
+
 func TestExecReplacesMachineAndStackButPreservesProcessIdentity(t *testing.T) {
 	state := testStore(t)
 	run, err := state.CreateRun(context.Background(), CreateRunParams{

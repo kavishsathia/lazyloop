@@ -281,10 +281,12 @@ entries:
     since: 0.1.0
     stability: experimental
     summary: Snapshots the current run when Codex launches a subagent and binds the snapshot to that child.
-    syntax: ['Codex SubagentStart event (automatic)']
+    syntax: ['Codex spawn event followed by automatic child attachment']
     semantics:
       - The child receives its own run ID, stack, machine, state pointer, limits, and process identity.
       - Parent and child advance independently after the snapshot boundary.
+      - PreToolUse rewrites the spawn message with a one-time fork token; SubagentStart ordering is never used for identity correlation.
+      - Until `hamster attach` presents that token, the unbound child is quarantined from other tool calls.
     preconditions:
       - predicate: parent agent has an active bound run
         description: Hamster needs a current process image to snapshot.
@@ -297,10 +299,10 @@ entries:
         description: Mutating the child does not move the parent state pointer.
         guarantee: enforced
         evidence: persisted child run with parent_run_id and fork snapshot
-      - predicate: child agent ID is bound to child run ID
-        description: Later hook events route to the child's state machine.
-        guarantee: observed
-        evidence: Codex SubagentStart agent_id
+      - predicate: child agent ID is bound to the token-selected child run ID
+        description: Later hook events route to the exact snapshot named in the child instructions.
+        guarantee: enforced
+        evidence: atomic fork-token claim plus Codex agent_id
     failures:
       - code: orphan_subagent
         when: Codex starts a child without an observable parent binding.
@@ -310,7 +312,39 @@ entries:
         language: text
         test: none
         source: 'No language statement is required; spawning a Codex subagent triggers fork.'
-    related: [process.exec, process.wait, process.return]
+    related: [process.attach, process.exec, process.wait, process.return]
+
+  - id: process.attach
+    title: Attach a forked process
+    kind: process
+    aliases: [attach]
+    since: 0.1.0
+    stability: experimental
+    summary: Binds a newly started Codex subagent to the exact Hamster snapshot selected by its injected fork token.
+    syntax: ['hamster attach FORK_TOKEN']
+    semantics:
+      - Hamster injects the complete command into the child message by rewriting the parent spawn tool input.
+      - A child with pending session forks is denied all other hook-visible local tool calls until attachment succeeds.
+      - Tokens may be claimed in any order, so concurrent subagents cannot exchange snapshots accidentally.
+    preconditions:
+      - predicate: token names a pending fork in the parent Codex session
+        description: Tokens cannot claim a snapshot from another session or a different child after attachment.
+        checked: runtime
+    postconditions:
+      - predicate: child agent has exactly one current forked run
+        description: The stable Codex agent ID routes every later hook event to the selected run.
+        guarantee: enforced
+        evidence: unique process binding and claimed pending_forks row
+    failures:
+      - code: invalid_token
+        when: The token is absent, belongs to another session, or was claimed by another agent.
+        remediation: Use the exact attach command injected into the initial subagent instructions.
+    examples:
+      - title: Automatic child handshake
+        language: shell
+        test: none
+        source: 'hamster attach fork_0123456789abcdef0123456789abcdef'
+    related: [process.fork, process.exec]
 
   - id: process.exec
     title: Replace a process image

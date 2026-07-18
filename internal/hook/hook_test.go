@@ -88,6 +88,18 @@ func TestGoalPoliciesClassifyBashCapabilities(t *testing.T) {
 	}
 }
 
+func TestGoalCodexPolicyAllowsSubagentSpawn(t *testing.T) {
+	engine, session := setupRun(t, `goal parallel {
+  allow codex;
+  verify done = true;
+}`)
+	event := Event{SessionID: session, EventName: "PreToolUse", ToolName: "collaborationspawn_agent", ToolUseID: "spawn", ToolInput: json.RawMessage(`{"message":"work","task_name":"child"}`)}
+	decision, err := engine.Decide(context.Background(), event)
+	if err != nil || decision.Permission != "allow" || !decision.Tracked {
+		t.Fatalf("spawn decision = %#v, error = %v", decision, err)
+	}
+}
+
 func TestUnboundSessionPassesThrough(t *testing.T) {
 	engine, _ := setupRun(t, `goal okay { verify yes = true; return yes; }`)
 	decision, err := engine.Decide(context.Background(), toolEvent("other-session", "Bash", "anything"))
@@ -108,5 +120,40 @@ func TestCodexDenyOutputUsesDocumentedShape(t *testing.T) {
 	specific := output["hookSpecificOutput"].(map[string]any)
 	if specific["permissionDecision"] != "deny" || specific["hookEventName"] != "PreToolUse" {
 		t.Fatalf("output = %s", payload)
+	}
+}
+
+func TestCodexAllowOutputCanRewriteToolInput(t *testing.T) {
+	updated := json.RawMessage(`{"message":"work\nattach token"}`)
+	payload, err := CodexOutput("PreToolUse", Decision{Permission: "allow", Context: "fork prepared", UpdatedInput: updated})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(payload, &output); err != nil {
+		t.Fatal(err)
+	}
+	specific := output["hookSpecificOutput"].(map[string]any)
+	if specific["permissionDecision"] != "allow" || specific["additionalContext"] != "fork prepared" {
+		t.Fatalf("output = %s", payload)
+	}
+	input := specific["updatedInput"].(map[string]any)
+	if input["message"] != "work\nattach token" {
+		t.Fatalf("updated input = %#v", input)
+	}
+}
+
+func TestCodexContextOutputDoesNotEmitUnsupportedPermissionDecision(t *testing.T) {
+	payload, err := CodexOutput("SubagentStart", Decision{Permission: "allow", Context: "attach first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(payload, &output); err != nil {
+		t.Fatal(err)
+	}
+	specific := output["hookSpecificOutput"].(map[string]any)
+	if _, exists := specific["permissionDecision"]; exists {
+		t.Fatalf("SubagentStart output contains unsupported permissionDecision: %s", payload)
 	}
 }

@@ -79,7 +79,9 @@ prospective time and attempt limits, `allow`/`disallow`, exact `bash.run`
 steps, independent `bash.check` verifiers, and the first process kernel.
 
 When a bound Codex agent spawns a subagent, Hamster snapshots the complete run
-at the spawn boundary and binds the new `agent_id` on `SubagentStart`. A child
+at the spawn boundary and rewrites the spawn message with a one-time
+`hamster attach` command. The child is quarantined from other tool calls until
+that token binds its new `agent_id` to the exact snapshot. A child
 can replace its inherited machine without changing process identity, and its
 parent can wait durably for the structured result:
 
@@ -90,8 +92,8 @@ hamster wait <child-run-id>
 
 Normal loop `return` completes the child, clears its binding, and wakes a
 waiting parent. `exec` clears the old machine stack and machine-local limits;
-`wait` currently accepts direct children. Simultaneous pending subagents use
-observed start order until the fork-token correlation protocol is implemented.
+`wait` currently accepts direct children. Simultaneous pending subagents may
+start and attach in any order without cross-binding their state machines.
 
 ## Runtime observability
 

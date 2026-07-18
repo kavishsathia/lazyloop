@@ -58,6 +58,8 @@ func run(ctx context.Context, arguments []string) error {
 		return runCommand(ctx, arguments[1:])
 	case "signal":
 		return signalCommand(arguments[1:])
+	case "attach":
+		return attachCommand(arguments[1:])
 	case "exec":
 		return execCommand(ctx, arguments[1:])
 	case "wait":
@@ -73,6 +75,14 @@ func run(ctx context.Context, arguments []string) error {
 	default:
 		return usageError()
 	}
+}
+
+func attachCommand(arguments []string) error {
+	if len(arguments) != 1 {
+		return errors.New("usage: hamster attach FORK_TOKEN")
+	}
+	fmt.Println("Hamster fork attachment handled by the Codex hook.")
+	return nil
 }
 
 func signalCommand(arguments []string) error {
@@ -748,5 +758,5 @@ func requestID() string {
 }
 
 func usageError() error {
-	return errors.New("usage: hamster <init|ui|man|run|signal|exec|wait|kill|status|inspect|trace|hook|daemon|version>")
+	return errors.New("usage: hamster <init|ui|man|run|signal|attach|exec|wait|kill|status|inspect|trace|hook|daemon|version>")
 }

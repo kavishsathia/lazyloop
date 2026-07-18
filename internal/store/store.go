@@ -147,6 +147,14 @@ CREATE TABLE IF NOT EXISTS pending_forks (
 
 CREATE INDEX IF NOT EXISTS pending_forks_session ON pending_forks(session_id, status, created_at);
 
+CREATE TABLE IF NOT EXISTS agent_quarantines (
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  agent_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  cleared_at TEXT,
+  PRIMARY KEY(session_id, agent_id)
+);
+
 CREATE TABLE IF NOT EXISTS traces (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
