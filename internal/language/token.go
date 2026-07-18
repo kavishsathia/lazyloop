@@ -38,6 +38,10 @@ const (
 	TokenDisallow   TokenKind = "disallow"
 	TokenIn         TokenKind = "in"
 	TokenWith       TokenKind = "with"
+	TokenIf         TokenKind = "if"
+	TokenFork       TokenKind = "fork"
+	TokenExec       TokenKind = "exec"
+	TokenWait       TokenKind = "wait"
 	TokenTrue       TokenKind = "true"
 	TokenFalse      TokenKind = "false"
 	TokenLBrace     TokenKind = "{"
@@ -80,6 +84,10 @@ var keywords = map[string]TokenKind{
 	"disallow": TokenDisallow,
 	"in":       TokenIn,
 	"with":     TokenWith,
+	"if":       TokenIf,
+	"fork":     TokenFork,
+	"exec":     TokenExec,
+	"wait":     TokenWait,
 	"true":     TokenTrue,
 	"false":    TokenFalse,
 }

@@ -51,6 +51,23 @@ type Step struct {
 func (s *Step) NodeSpan() Span { return s.Span }
 func (s *Step) statementNode() {}
 
+type If struct {
+	Span       Span        `json:"span"`
+	Condition  Expr        `json:"condition"`
+	Statements []Statement `json:"statements"`
+}
+
+func (i *If) NodeSpan() Span { return i.Span }
+func (i *If) statementNode() {}
+
+type Exec struct {
+	Span   Span   `json:"span"`
+	Script string `json:"script"`
+}
+
+func (e *Exec) NodeSpan() Span { return e.Span }
+func (e *Exec) statementNode() {}
+
 type Verify struct {
 	Span  Span   `json:"span"`
 	Name  string `json:"name"`
@@ -90,6 +107,21 @@ type Value interface {
 	Node
 	valueNode()
 }
+
+type Fork struct {
+	Span Span `json:"span"`
+}
+
+func (f *Fork) NodeSpan() Span { return f.Span }
+func (f *Fork) valueNode()     {}
+
+type Wait struct {
+	Span   Span `json:"span"`
+	Target Expr `json:"target"`
+}
+
+func (w *Wait) NodeSpan() Span { return w.Span }
+func (w *Wait) statementNode() {}
 
 type Expr interface {
 	Value

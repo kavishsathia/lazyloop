@@ -70,11 +70,20 @@ func (e *Engine) authorize(run *store.Run, event Event) Decision {
 			return deny(fmt.Sprintf("The flow is waiting for the exact command declared by step %q.", state.Name), detail)
 		}
 		return Decision{Permission: "allow"}
+	case ir.StateFork:
+		if !isSpawnTool(event.ToolName) {
+			return deny(fmt.Sprintf("The flow is waiting for fork step %q, not %s.", state.Name, event.ToolName), "Spawn exactly one Codex subagent for this fork.")
+		}
+		return Decision{Permission: "allow"}
 	case ir.StateComplete:
 		return Decision{Permission: "allow"}
 	default:
 		return deny(fmt.Sprintf("Hamster is processing runtime state %q and cannot accept an agent tool call yet.", state.Name), "Wait for Hamster to finish the current runtime transition.")
 	}
+}
+
+func isSpawnTool(name string) bool {
+	return strings.EqualFold(name, "collaborationspawn_agent") || strings.EqualFold(name, "spawn_agent") || strings.EqualFold(name, "Agent")
 }
 
 func expectedTool(expression *ir.Expression) (tool, detail string, ok bool) {

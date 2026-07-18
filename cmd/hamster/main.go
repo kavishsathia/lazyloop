@@ -574,7 +574,7 @@ func execCommand(ctx context.Context, arguments []string) error {
 		return err
 	}
 	if *session == "" {
-		fmt.Println("Hamster exec is handled by the Codex pre-tool hook. Outside Codex, pass --session.")
+		fmt.Println("Language exec is runtime-owned. For administrative recovery, pass --session explicitly.")
 		return nil
 	}
 	var machine any
@@ -617,7 +617,7 @@ func waitCommand(ctx context.Context, arguments []string) error {
 		return err
 	}
 	if *session == "" {
-		fmt.Println("Hamster wait is handled by the Codex pre-tool hook. Outside Codex, pass --session.")
+		fmt.Println("Language wait is runtime-owned. For administrative recovery, pass --session explicitly.")
 		return nil
 	}
 	if flags.NArg() != 1 {

@@ -86,8 +86,8 @@ func (p *parser) parseLoop() Loop {
 
 func (p *parser) parseStatement(loopKind TokenKind) Statement {
 	start := p.peek().Span.Start
-	if loopKind == TokenFlow && p.peek().Kind != TokenStep {
-		p.errorAt(p.peek(), "flow may contain only step declarations")
+	if loopKind == TokenFlow && p.peek().Kind != TokenStep && p.peek().Kind != TokenIf && p.peek().Kind != TokenExec && p.peek().Kind != TokenWait {
+		p.errorAt(p.peek(), "flow may contain only step, if, exec, or wait declarations")
 		return nil
 	}
 	switch p.peek().Kind {
@@ -101,11 +101,58 @@ func (p *parser) parseStatement(loopKind TokenKind) Statement {
 		var value Value
 		if p.at(TokenGoal) || p.at(TokenForeach) {
 			value = &LoopValue{Loop: p.parseLoop()}
+		} else if p.match(TokenFork) {
+			value = &Fork{Span: p.previous().Span}
 		} else {
 			value = p.parseExpression()
 		}
 		end := p.consume(TokenSemicolon, "expected ';' after step")
 		return &Step{Span: Span{Start: start, End: end.Span.End}, Name: name.Lexeme, Value: value}
+	case TokenIf:
+		p.advance()
+		if loopKind != TokenFlow {
+			p.errorAt(p.previous(), "if is only valid inside flow")
+		}
+		condition := p.parseExpression()
+		p.consume(TokenLBrace, "expected '{' after if condition")
+		var statements []Statement
+		for !p.at(TokenRBrace) && !p.at(TokenEOF) {
+			statement := p.parseStatement(TokenFlow)
+			if statement != nil {
+				statements = append(statements, statement)
+			} else {
+				p.synchronizeStatement()
+			}
+		}
+		end := p.consume(TokenRBrace, "expected '}' after if body")
+		return &If{Span: Span{Start: start, End: end.Span.End}, Condition: condition, Statements: statements}
+	case TokenExec:
+		p.advance()
+		if loopKind != TokenFlow {
+			p.errorAt(p.previous(), "exec is only valid inside flow")
+		}
+		script := p.peek()
+		if script.Kind != TokenIdentifier && script.Kind != TokenString {
+			p.errorAt(script, "expected script name after exec")
+		} else {
+			p.advance()
+		}
+		end := p.consume(TokenSemicolon, "expected ';' after exec")
+		scriptName := script.Lexeme
+		if script.Kind == TokenString {
+			if decoded, err := strconv.Unquote(script.Lexeme); err == nil {
+				scriptName = decoded
+			}
+		}
+		return &Exec{Span: Span{Start: start, End: end.Span.End}, Script: scriptName}
+	case TokenWait:
+		p.advance()
+		if loopKind != TokenFlow {
+			p.errorAt(p.previous(), "wait is only valid inside flow")
+		}
+		target := p.parseExpression()
+		end := p.consume(TokenSemicolon, "expected ';' after wait")
+		return &Wait{Span: Span{Start: start, End: end.Span.End}, Target: target}
 	case TokenVerify:
 		p.advance()
 		name := p.consume(TokenIdentifier, "expected verification name")
@@ -130,7 +177,7 @@ func (p *parser) parseStatement(loopKind TokenKind) Statement {
 		end := p.consume(TokenSemicolon, "expected ';' after policy")
 		return &Policy{Span: Span{Start: start, End: end.Span.End}, Allow: allow, Value: value}
 	default:
-		p.errorAt(p.peek(), "expected step, verify, limit, return, allow, or disallow")
+		p.errorAt(p.peek(), "expected step, if, exec, verify, limit, return, allow, or disallow")
 		return nil
 	}
 }

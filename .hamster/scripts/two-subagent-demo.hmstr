@@ -1,0 +1,25 @@
+goal {
+  limit time 10m;
+  limit attempts 20;
+
+  allow codex;
+  allow bash;
+
+  verify alpha_exists = bash.check("test -f .hamster/demo/alpha.txt");
+  verify beta_exists = bash.check("test -f .hamster/demo/beta.txt");
+  verify alpha_correct = bash.check("test \"$(cat .hamster/demo/alpha.txt)\" = alpha");
+  verify beta_correct = bash.check("test \"$(cat .hamster/demo/beta.txt)\" = beta");
+  return [alpha_correct, beta_correct];
+} with flow {
+  step alpha = fork;
+  if alpha.child {
+    exec two-subagent-alpha;
+  }
+
+  step beta = fork;
+  if beta.child {
+    exec two-subagent-beta;
+  }
+
+  wait [alpha, beta];
+}

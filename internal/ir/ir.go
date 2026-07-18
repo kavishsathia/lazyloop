@@ -40,6 +40,10 @@ type StateKind string
 const (
 	StateAgentWork StateKind = "agent_work"
 	StateStep      StateKind = "step"
+	StateFork      StateKind = "fork"
+	StateBranch    StateKind = "branch"
+	StateExec      StateKind = "exec"
+	StateWait      StateKind = "wait"
 	StateNested    StateKind = "nested"
 	StateVerify    StateKind = "verify"
 	StateLimit     StateKind = "limit"
@@ -63,6 +67,7 @@ type State struct {
 	Kind       StateKind     `json:"kind"`
 	Executor   Executor      `json:"executor"`
 	Name       string        `json:"name,omitempty"`
+	Script     string        `json:"script,omitempty"`
 	Expression *Expression   `json:"expression,omitempty"`
 	Nested     *Machine      `json:"nested,omitempty"`
 	Limit      *Limit        `json:"limit,omitempty"`

@@ -72,6 +72,25 @@ func TestFlowAllowsOnlyCurrentExactBashStep(t *testing.T) {
 	}
 }
 
+func TestForkStepAllowsOnlyCodexSpawn(t *testing.T) {
+	engine, session := setupRun(t, `goal {
+  verify done = true;
+} with flow {
+  step child = fork;
+  if child.child { exec child-work; }
+  wait child;
+}`)
+	spawn := Event{SessionID: session, EventName: "PreToolUse", ToolName: "collaborationspawn_agent", ToolUseID: "spawn", ToolInput: json.RawMessage(`{"message":"work","task_name":"child"}`)}
+	allowed, err := engine.Decide(context.Background(), spawn)
+	if err != nil || allowed.Permission != "allow" || !allowed.Tracked {
+		t.Fatalf("spawn decision = %#v, error = %v", allowed, err)
+	}
+	denied, err := engine.Decide(context.Background(), toolEvent(session, "Bash", "true"))
+	if err != nil || denied.Permission != "deny" || !strings.Contains(denied.Remediation, "Spawn") {
+		t.Fatalf("non-spawn decision = %#v, error = %v", denied, err)
+	}
+}
+
 func TestGoalPoliciesClassifyBashCapabilities(t *testing.T) {
 	engine, session := setupRun(t, `goal {
   allow git;

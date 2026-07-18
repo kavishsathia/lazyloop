@@ -70,24 +70,9 @@ func (c *compiler) compileGoal(machine *ir.Machine, goal *language.Goal) {
 	} else {
 		machine.Imperative = true
 		if len(goal.Flow.Statements) == 0 {
-			c.error(goal.Flow.Span, "attached flow must contain at least one step")
+			c.error(goal.Flow.Span, "attached flow must contain at least one statement")
 		}
-		for _, statement := range goal.Flow.Statements {
-			node, ok := statement.(*language.Step)
-			if !ok {
-				continue
-			}
-			state := ir.State{Kind: ir.StateStep, Executor: ir.ExecutorAgent, Name: node.Name, Span: node.Span}
-			switch value := node.Value.(type) {
-			case *language.LoopValue:
-				state.Kind = ir.StateNested
-				state.Nested = c.compileLoop(value.Loop)
-			case language.Expr:
-				expression := c.compileExpression(value)
-				state.Expression = &expression
-			}
-			machine.States = append(machine.States, state)
-		}
+		c.compileFlowStatements(machine, goal.Flow.Statements)
 	}
 	verificationCount := 0
 	returnCount := 0
@@ -112,6 +97,71 @@ func (c *compiler) compileGoal(machine *ir.Machine, goal *language.Goal) {
 	}
 	c.appendLoopTerminalStates(machine)
 }
+
+func (c *compiler) compileFlowStatements(machine *ir.Machine, statements []language.Statement) {
+	for _, statement := range statements {
+		switch node := statement.(type) {
+		case *language.Step:
+			state := ir.State{Kind: ir.StateStep, Executor: ir.ExecutorAgent, Name: node.Name, Span: node.Span}
+			switch value := node.Value.(type) {
+			case *language.LoopValue:
+				state.Kind = ir.StateNested
+				state.Nested = c.compileLoop(value.Loop)
+			case *language.Fork:
+				state.Kind = ir.StateFork
+			case language.Expr:
+				expression := c.compileExpression(value)
+				state.Expression = &expression
+			}
+			machine.States = append(machine.States, state)
+		case *language.If:
+			condition := c.compileExpression(node.Condition)
+			branchIndex := len(machine.States)
+			machine.States = append(machine.States, ir.State{Kind: ir.StateBranch, Executor: ir.ExecutorControl, Name: "if", Expression: &condition, Span: node.Span})
+			bodyStart := len(machine.States)
+			c.compileFlowStatements(machine, node.Statements)
+			afterBody := len(machine.States)
+			machine.States[branchIndex].OnSuccess = stateTarget(bodyStart)
+			machine.States[branchIndex].OnFailure = stateTarget(afterBody)
+		case *language.Exec:
+			if node.Script == "" {
+				c.error(node.Span, "exec requires a script name")
+			}
+			machine.States = append(machine.States, ir.State{Kind: ir.StateExec, Executor: ir.ExecutorRuntime, Name: "exec", Script: node.Script, Span: node.Span})
+		case *language.Wait:
+			c.validateWaitTarget(node)
+			expression := c.compileExpression(node.Target)
+			machine.States = append(machine.States, ir.State{Kind: ir.StateWait, Executor: ir.ExecutorRuntime, Name: "wait", Expression: &expression, Span: node.Span})
+		}
+	}
+}
+
+func (c *compiler) validateWaitTarget(wait *language.Wait) {
+	var validate func(language.Expr) bool
+	validate = func(expression language.Expr) bool {
+		switch node := expression.(type) {
+		case *language.Identifier:
+			return true
+		case *language.List:
+			if len(node.Values) == 0 {
+				return false
+			}
+			for _, value := range node.Values {
+				if _, ok := value.(*language.Identifier); !ok {
+					return false
+				}
+			}
+			return true
+		default:
+			return false
+		}
+	}
+	if !validate(wait.Target) {
+		c.error(wait.Span, "wait requires a fork handle or non-empty list of fork handles")
+	}
+}
+
+func stateTarget(index int) string { return fmt.Sprintf("@state:%d", index) }
 
 func (c *compiler) validateLimit(limit *language.Limit) {
 	literal, ok := limit.Value.(*language.Literal)
@@ -175,6 +225,21 @@ func (c *compiler) assignStateIDs(machine *ir.Machine) {
 			machine.States[index].Next = machine.States[index+1].ID
 		}
 	}
+	for index := range machine.States {
+		machine.States[index].OnSuccess = resolveStateTarget(machine, machine.States[index].OnSuccess)
+		machine.States[index].OnFailure = resolveStateTarget(machine, machine.States[index].OnFailure)
+	}
+}
+
+func resolveStateTarget(machine *ir.Machine, target string) string {
+	if !strings.HasPrefix(target, "@state:") {
+		return target
+	}
+	index, err := strconv.Atoi(strings.TrimPrefix(target, "@state:"))
+	if err != nil || index < 0 || index >= len(machine.States) {
+		return ""
+	}
+	return machine.States[index].ID
 }
 
 func (c *compiler) compileExpression(expression language.Expr) ir.Expression {

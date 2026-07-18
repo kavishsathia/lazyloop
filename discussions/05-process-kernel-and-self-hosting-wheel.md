@@ -25,8 +25,9 @@ records the reason, and atomically removes the process binding.
 
 ## Fork
 
-A native Codex `collaborationspawn_agent` pre-tool event creates the fork
-snapshot. The child receives a new process and run while cloning:
+Language-level `step child = fork;` makes the next native Codex
+`collaborationspawn_agent` call the only permitted agent action. Its pre-tool
+event creates the fork snapshot. The child receives a new process and run while cloning:
 
 - The current machine and state pointer.
 - Nested loop stack.
@@ -49,7 +50,10 @@ attach remains idempotent.
 
 ## Exec
 
-`hamster exec SCRIPT` is a hook-owned control operation. It preserves the
+`exec SCRIPT;` is a runtime-owned flow statement. After Hamster evaluates a
+post-fork condition such as `if child.child`, reaching exec automatically
+replaces the process image; Codex neither chooses nor invokes the transition.
+It preserves the
 process ID, run ID, ancestry, and Codex binding while replacing:
 
 - The root machine.
@@ -59,14 +63,16 @@ process ID, run ID, ancestry, and Codex binding while replacing:
 - Machine-local iteration and verification state.
 
 The runtime pumps control and verification states before returning control to
-Codex. The implementation currently clears all persisted run-limit rows on
+Codex. The administrative `hamster exec SCRIPT` CLI remains available for
+debugging and recovery, but language execution does not depend on it. The implementation clears all persisted run-limit rows on
 exec. A later budget model must distinguish process-wide cost/time allocation
 from machine-local retry limits so the former survives exec.
 
 ## Wait and return
 
-`hamster wait CHILD_RUN_ID` accepts only a direct child. If the child is still
-running, the parent becomes `waiting` and its Codex binding remains intact.
+`wait child;` and `wait [alpha, beta];` are runtime-owned flow statements and
+accept direct-child fork handles only. If any child is still running, the
+parent becomes `waiting` and its Codex binding remains intact.
 Ordinary policy denies further agent work while that status is active, but the
 kill switch remains available.
 
@@ -78,6 +84,8 @@ second value.
 
 Wait state is stored in SQLite rather than in a blocked goroutine, so daemon
 and computer restarts do not lose the relationship.
+The administrative `hamster wait CHILD_RUN_ID` CLI exposes the same kernel for
+debugging and recovery; an agent does not invoke it for a language wait.
 
 ## Crash recovery and replay
 
@@ -98,7 +106,7 @@ recovery closes the deliberately separate state-update/finalization boundary.
 This milestone deliberately exposes a small kernel:
 
 ```text
-Codex spawn -> automatic fork -> child exec -> parent wait -> child return
+fork step -> Codex spawn -> child/parent branch -> automatic exec -> runtime wait -> child return
 ```
 
 The daemon also exposes versioned `process.fork`, `process.exec`,

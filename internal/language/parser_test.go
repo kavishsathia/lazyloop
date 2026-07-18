@@ -74,6 +74,37 @@ func TestRejectNamesAndStandaloneFlow(t *testing.T) {
 	}
 }
 
+func TestParsesOSProcessControlSyntax(t *testing.T) {
+	program, diagnostics := Parse(`goal {
+  verify done = true;
+  return results;
+} with flow {
+  step alpha = fork;
+  if alpha.child {
+    exec child-alpha;
+  }
+  wait alpha;
+}`)
+	if len(diagnostics) != 0 {
+		t.Fatalf("diagnostics = %v", diagnostics)
+	}
+	goal := program.Loops[0].(*Goal)
+	if len(goal.Flow.Statements) != 3 {
+		t.Fatalf("flow statements = %#v", goal.Flow.Statements)
+	}
+	forkStep := goal.Flow.Statements[0].(*Step)
+	if _, ok := forkStep.Value.(*Fork); !ok {
+		t.Fatalf("fork value = %T", forkStep.Value)
+	}
+	branch := goal.Flow.Statements[1].(*If)
+	if len(branch.Statements) != 1 || branch.Statements[0].(*Exec).Script != "child-alpha" {
+		t.Fatalf("branch = %#v", branch)
+	}
+	if _, ok := goal.Flow.Statements[2].(*Wait); !ok {
+		t.Fatalf("wait statement = %T", goal.Flow.Statements[2])
+	}
+}
+
 func TestRejectStepInsideGoal(t *testing.T) {
 	_, diagnostics := Parse(`goal { step nope = bash.run("false"); }`)
 	if len(diagnostics) == 0 || diagnostics[0].Message != "step is only valid inside flow" {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"hamster/internal/compiler"
 	"hamster/internal/hook"
+	"hamster/internal/ir"
 	"hamster/internal/language"
 	"hamster/internal/store"
 )
@@ -122,6 +124,105 @@ func TestAttachedFlowProbesOnlyAfterCompleteCycle(t *testing.T) {
 	if len(calls) != 1 || calls[0].Command != "light" {
 		t.Fatalf("verifiers did not short-circuit: %#v", calls)
 	}
+}
+
+func TestTwoForkedChildrenExecAutomaticallyAndWaitWakesParent(t *testing.T) {
+	runner, parent, _ := runtimeRun(t, `goal {
+  verify alpha_returned = alpha.result == "alpha";
+  verify beta_returned = beta.result == "beta";
+  return [alpha.result, beta.result];
+} with flow {
+  step alpha = fork;
+  if alpha.child {
+    exec alpha-work;
+  }
+  step beta = fork;
+  if beta.child {
+    exec beta-work;
+  }
+  wait [alpha, beta];
+}`)
+	runner.SetExecResolver(func(script, _ string) (ir.Machine, error) {
+		if script != "alpha-work" && script != "beta-work" {
+			t.Fatalf("exec script = %q", script)
+		}
+		result := strings.TrimSuffix(script, "-work")
+		program, diagnostics := language.Parse(fmt.Sprintf(`goal {
+  verify finished = true;
+  return %q;
+}`, result))
+		if len(diagnostics) != 0 {
+			t.Fatal(diagnostics)
+		}
+		compiled, diagnostics := compiler.Compile(program)
+		if len(diagnostics) != 0 {
+			t.Fatal(diagnostics)
+		}
+		return compiled.Machines[0], nil
+	})
+	started, err := runner.Start(context.Background(), parent.ID)
+	if err != nil || started.Machine.States[0].Kind != ir.StateFork {
+		t.Fatalf("parent start = %#v, %v", started, err)
+	}
+	for index, key := range []string{"fork-alpha", "fork-beta"} {
+		child, err := runner.store.PrepareFork(context.Background(), parent.ID, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, _ := json.Marshal(map[string]any{"success": true, "hamster_child_run_id": child.ID})
+		spawnPost := hook.Event{SessionID: "session", EventName: "PostToolUse", ToolName: "collaborationspawn_agent", ToolUseID: fmt.Sprintf("spawn-%d", index), ToolResponse: response}
+		spawnPost.Raw = hook.MarshalEvent(spawnPost)
+		if _, err := runner.HandleHook(context.Background(), spawnPost); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waiting, _ := runner.store.GetRun(context.Background(), parent.ID)
+	if waiting.Status != "waiting" || waiting.Machine.States[stateIndex(waiting.Machine, waiting.StateID)].Kind != ir.StateWait {
+		t.Fatalf("parent did not wait automatically: %#v", waiting)
+	}
+	for index, key := range []string{"fork-alpha", "fork-beta"} {
+		agentID := fmt.Sprintf("agent-%d", index)
+		child, err := runner.store.ClaimFork(context.Background(), "session", agentID, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		child, err = runner.ResumeForkChild(context.Background(), child.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		childState := child.Machine.States[stateIndex(child.Machine, child.StateID)]
+		if childState.Kind != ir.StateAgentWork || len(child.Stack) != 0 || child.Machine.Imperative {
+			t.Fatalf("child exec did not replace complete machine: %#v", child)
+		}
+		childPost := postEvent(fmt.Sprintf("child-%d-finished", index))
+		childPost.AgentID = agentID
+		childPost.Raw = hook.MarshalEvent(childPost)
+		if _, err := runner.HandleHook(context.Background(), childPost); err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			stillWaiting, _ := runner.store.GetRun(context.Background(), parent.ID)
+			if stillWaiting.Status != "waiting" {
+				t.Fatalf("parent woke before both children: %#v", stillWaiting)
+			}
+		}
+	}
+	finished, err := runner.store.GetRun(context.Background(), parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Status != "complete" || string(finished.Result) != `["alpha","beta"]` {
+		t.Fatalf("parent result = %#v", finished)
+	}
+}
+
+func stateIndex(machine ir.Machine, stateID string) int {
+	for index, state := range machine.States {
+		if state.ID == stateID {
+			return index
+		}
+	}
+	return -1
 }
 
 func TestAttemptLimitStartsAtDeclaration(t *testing.T) {

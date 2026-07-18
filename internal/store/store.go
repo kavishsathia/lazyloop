@@ -269,6 +269,7 @@ type Run struct {
 	WorkspaceRoot     string          `json:"workspace_root"`
 	CreatedAt         time.Time       `json:"created_at"`
 	UpdatedAt         time.Time       `json:"updated_at"`
+	ResetProcessState bool            `json:"-"`
 }
 
 type Frame struct {
@@ -458,7 +459,12 @@ func (s *Store) UpdateRun(ctx context.Context, expectedState string, run *Run) e
 	if err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE runs SET machine_name=?, machine_json=?, state_id=?, status=?, iteration=?,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE runs SET machine_name=?, machine_json=?, state_id=?, status=?, iteration=?,
 variables_json=?, stack_json=?, result_json=?, termination_reason=?, updated_at=? WHERE id=? AND state_id=?`,
 		run.Machine.Name, machineJSON, run.StateID, run.Status, run.Iteration, []byte(run.Variables), stackJSON,
 		[]byte(run.Result), run.TerminationReason, formatTime(time.Now().UTC()), run.ID, expectedState)
@@ -472,7 +478,15 @@ variables_json=?, stack_json=?, result_json=?, termination_reason=?, updated_at=
 	if changed != 1 {
 		return errors.New("run changed concurrently")
 	}
-	return nil
+	if run.ResetProcessState {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM run_limits WHERE run_id=?`, run.ID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM process_waits WHERE parent_run_id=?`, run.ID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ApplyEvent(ctx context.Context, requestID, kind string, payload json.RawMessage, decision EventDecision, expectedState string, run *Run) (bool, error) {
@@ -518,6 +532,14 @@ variables_json=?, stack_json=?, result_json=?, termination_reason=?, updated_at=
 	}
 	if changed != 1 {
 		return false, errors.New("run changed concurrently")
+	}
+	if run.ResetProcessState {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM run_limits WHERE run_id=?`, run.ID); err != nil {
+			return false, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM process_waits WHERE parent_run_id=?`, run.ID); err != nil {
+			return false, err
+		}
 	}
 	return false, tx.Commit()
 }

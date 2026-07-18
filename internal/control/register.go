@@ -59,13 +59,17 @@ func registerFromHook(ctx context.Context, state *store.Store, runner *hamsterru
 		if err != nil {
 			return hook.Decision{Permission: "deny", Reason: err.Error(), Remediation: "Use the exact fork token from this subagent's initial Hamster instructions."}, nil
 		}
-		return hook.Decision{Permission: "allow", Tracked: true, RunID: child.ID, Context: fmt.Sprintf("Hamster attached this Codex subagent to exact forked run %s. Continue from state %s.", child.ID, child.StateID)}, nil
+		child, err = runner.ResumeForkChild(ctx, child.ID)
+		if err != nil {
+			return hook.Decision{}, err
+		}
+		return hook.Decision{Permission: "allow", Tracked: true, RunID: child.ID, Context: fmt.Sprintf("Hamster attached this Codex subagent to exact forked run %s and resumed the child branch at state %s.", child.ID, child.StateID)}, nil
 	}
 	if command.Name == "exec" {
-		return handleExecCommand(ctx, state, runner, event, command.Args)
+		return hook.Decision{Permission: "deny", Reason: "language exec is runtime-owned", Remediation: "Declare exec SCRIPT inside the active flow; for administrative recovery, run hamster exec with an explicit --session outside Codex."}, nil
 	}
 	if command.Name == "wait" {
-		return handleWaitCommand(ctx, state, event, command.Args)
+		return hook.Decision{Permission: "deny", Reason: "language wait is runtime-owned", Remediation: "Declare wait HANDLE inside the active flow; for administrative recovery, run hamster wait with an explicit --session outside Codex."}, nil
 	}
 	if command.Name == "trace" {
 		return handleTraceCommand(ctx, state, event, command.Args)
@@ -115,57 +119,6 @@ func controlDecision(decision store.EventDecision) hook.Decision {
 		Permission: decision.Decision, Reason: decision.Reason, Remediation: decision.Remediation,
 		Context: decision.Context, Tracked: decision.RunID != "", RunID: decision.RunID,
 	}
-}
-
-func handleExecCommand(ctx context.Context, state *store.Store, runner *hamsterruntime.Runner, event hook.Event, arguments []string) (hook.Decision, error) {
-	run, err := state.FindCurrentRun(ctx, event.SessionID, event.AgentID)
-	if err == sql.ErrNoRows {
-		return hook.Decision{Permission: "deny", Reason: "exec requires a bound Hamster run", Remediation: "Start a loop with hamster run before replacing it."}, nil
-	}
-	if err != nil {
-		return hook.Decision{}, err
-	}
-	source, err := resolveSource(arguments, event.WorkspaceRoot)
-	if err != nil {
-		return hook.Decision{Permission: "deny", Reason: err.Error(), Remediation: "Correct the Hamster exec command and try again."}, nil
-	}
-	machine, err := compileMachine(source)
-	if err != nil {
-		return hook.Decision{Permission: "deny", Reason: err.Error(), Remediation: "Fix the replacement Hamster script diagnostics and exec it again."}, nil
-	}
-	if _, err := state.ExecRun(ctx, run.ID, machine, nil); err != nil {
-		return hook.Decision{}, err
-	}
-	executed, err := runner.Start(ctx, run.ID)
-	if err != nil {
-		return hook.Decision{}, err
-	}
-	return hook.Decision{
-		Permission: "allow", Tracked: true, RunID: run.ID,
-		Context: fmt.Sprintf("Hamster exec replaced the current machine with %s at state %s; process and run identity were preserved.", machineLabel(machine), executed.StateID),
-	}, nil
-}
-
-func handleWaitCommand(ctx context.Context, state *store.Store, event hook.Event, arguments []string) (hook.Decision, error) {
-	if len(arguments) != 1 {
-		return hook.Decision{Permission: "deny", Reason: "usage: hamster wait CHILD_RUN_ID", Remediation: "Pass the child run ID reported when Codex spawned the subagent."}, nil
-	}
-	parent, err := state.FindCurrentRun(ctx, event.SessionID, event.AgentID)
-	if err == sql.ErrNoRows {
-		return hook.Decision{Permission: "deny", Reason: "wait requires a bound Hamster run", Remediation: "Start or resume the parent loop first."}, nil
-	}
-	if err != nil {
-		return hook.Decision{}, err
-	}
-	waited, err := state.WaitRun(ctx, parent.ID, arguments[0])
-	if err != nil {
-		return hook.Decision{Permission: "deny", Reason: err.Error(), Remediation: "Wait only on a direct child of the current run."}, nil
-	}
-	contextMessage := fmt.Sprintf("Hamster suspended run %s until child %s terminates.", parent.ID, waited.ChildRunID)
-	if waited.Ready {
-		contextMessage = fmt.Sprintf("Hamster child %s is already %s with result %s.", waited.ChildRunID, waited.ChildStatus, string(waited.Result))
-	}
-	return hook.Decision{Permission: "allow", Tracked: true, RunID: parent.ID, Context: contextMessage}, nil
 }
 
 func handleKillCommand(ctx context.Context, state *store.Store, event hook.Event, arguments []string) (hook.Decision, error) {
@@ -275,6 +228,14 @@ func CompileFile(path string) (ir.Machine, error) {
 }
 
 func CompileSource(source string) (ir.Machine, error) {
+	return compileMachine(source)
+}
+
+func ResolveScriptMachine(script, cwd string) (ir.Machine, error) {
+	source, err := resolveRunSource(RunArguments{Script: script}, cwd)
+	if err != nil {
+		return ir.Machine{}, err
+	}
 	return compileMachine(source)
 }
 

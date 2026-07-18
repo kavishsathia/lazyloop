@@ -42,6 +42,40 @@ func TestCompileFlowTransitions(t *testing.T) {
 	}
 }
 
+func TestCompileOSProcessControlStates(t *testing.T) {
+	program := compileSource(t, `goal {
+  verify complete = true;
+  return child.result;
+} with flow {
+  step child = fork;
+  if child.child {
+    exec child-work;
+  }
+  wait child;
+}`)
+	states := program.Machines[0].States
+	if states[0].Kind != ir.StateFork || states[1].Kind != ir.StateBranch || states[2].Kind != ir.StateExec || states[3].Kind != ir.StateWait {
+		t.Fatalf("process states = %q, %q, %q, %q", states[0].Kind, states[1].Kind, states[2].Kind, states[3].Kind)
+	}
+	if states[1].OnSuccess != states[2].ID || states[1].OnFailure != states[3].ID || states[2].Script != "child-work" {
+		t.Fatalf("branch/exec states = %#v, %#v", states[1], states[2])
+	}
+	if states[3].Executor != ir.ExecutorRuntime {
+		t.Fatalf("wait executor = %q", states[3].Executor)
+	}
+}
+
+func TestRejectWaitWithoutForkHandleSyntax(t *testing.T) {
+	program, parseDiagnostics := language.Parse(`goal { verify done = true; } with flow { wait true; }`)
+	if len(parseDiagnostics) != 0 {
+		t.Fatal(parseDiagnostics)
+	}
+	_, diagnostics := Compile(program)
+	if len(diagnostics) != 1 || !strings.Contains(diagnostics[0].Message, "fork handle") {
+		t.Fatalf("diagnostics = %v", diagnostics)
+	}
+}
+
 func TestCompileGoalStartsWithAgentWork(t *testing.T) {
 	program := compileSource(t, `goal {
   allow git;

@@ -47,3 +47,24 @@ goal {
   };
 }
 ```
+
+## OS-like process control
+
+```text
+goal {
+  verify complete = alpha.result == "alpha" && beta.result == "beta";
+  return [alpha.result, beta.result];
+} with flow {
+  step alpha = fork;
+  if alpha.child { exec alpha-work; }
+
+  step beta = fork;
+  if beta.child { exec beta-work; }
+
+  wait [alpha, beta];
+}
+```
+
+Only `fork` is agent-owned because Codex must create the subagent. Hamster
+selects the parent/child branch, executes process-image replacement, and waits
+durably without asking an agent to issue `exec` or `wait` commands.

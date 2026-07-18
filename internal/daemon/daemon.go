@@ -48,7 +48,11 @@ type Server struct {
 	runner *hamsterruntime.Runner
 }
 
-func New(state *store.Store) *Server { return &Server{store: state, runner: hamsterruntime.New(state)} }
+func New(state *store.Store) *Server {
+	runner := hamsterruntime.New(state)
+	runner.SetExecResolver(control.ResolveScriptMachine)
+	return &Server{store: state, runner: runner}
+}
 
 func (s *Server) Serve(ctx context.Context, socketPath string) error {
 	return s.serve(ctx, socketPath, "", "")
@@ -296,6 +300,21 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 			} else if isControl {
 				result = hook.Decision{Permission: "allow"}
 			} else if params.Event.EventName == "PostToolUse" {
+				if isSpawnTool(params.Event.ToolName) {
+					var child *store.Run
+					child, err = s.store.FindFork(ctx, forkTokenForEvent(params.Event))
+					if err == nil {
+						var response map[string]any
+						if json.Unmarshal(params.Event.ToolResponse, &response) != nil || response == nil {
+							response = map[string]any{}
+						}
+						response["hamster_child_run_id"] = child.ID
+						params.Event.ToolResponse, _ = json.Marshal(response)
+					}
+				}
+				if err != nil {
+					break
+				}
 				result, err = s.runner.HandleHook(ctx, params.Event)
 			} else {
 				var decision hook.Decision
@@ -374,6 +393,11 @@ func isSpawnTool(name string) bool {
 func forkToken(requestID string) string {
 	digest := sha256.Sum256([]byte(requestID))
 	return fmt.Sprintf("fork_%x", digest[:16])
+}
+
+func forkTokenForEvent(event hook.Event) string {
+	event.EventName = "PreToolUse"
+	return forkToken(event.RequestID())
 }
 
 func injectForkAttachment(input json.RawMessage, token string) (json.RawMessage, error) {

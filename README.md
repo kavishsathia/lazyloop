@@ -78,21 +78,24 @@ hamster status --session test-session
 Runtime state is owned by one per-user daemon in `~/.hamster/hamster.db`. The
 current bootstrap supports persistent `goal`, `flow`, nested loops, `foreach`,
 prospective time and attempt limits, `allow`/`disallow`, exact `bash.run`
-steps, independent `bash.check` verifiers, and the first process kernel.
+steps, independent `bash.check` verifiers, and OS-like `fork`/`exec`/`wait`.
 On every database open, Hamster idempotently repairs terminal bindings,
 completed waits, and fork snapshots interrupted before pending-token
 registration. Replayed hook control requests reuse their persisted decision.
 
-When a bound Codex agent spawns a subagent, Hamster snapshots the complete run
-at the spawn boundary and rewrites the spawn message with a one-time
+When a flow reaches `step child = fork;`, Hamster permits exactly one Codex
+subagent spawn, snapshots the complete run, and rewrites the spawn message with a one-time
 `hamster attach` command. The child is quarantined from other tool calls until
-that token binds its new `agent_id` to the exact snapshot. A child
-can replace its inherited machine without changing process identity, and its
-parent can wait durably for the structured result:
+that token binds its new `agent_id` to the exact snapshot. Parent and child
+receive different fork-handle attributes. Hamster—not Codex—then performs the
+child-only exec and parent wait transitions:
 
-```sh
-hamster exec child-workflow
-hamster wait <child-run-id>
+```hmstr
+step child = fork;
+if child.child {
+  exec child-workflow;
+}
+wait child;
 ```
 
 Normal loop `return` completes the child, clears its binding, and wakes a

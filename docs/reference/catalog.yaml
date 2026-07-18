@@ -8,7 +8,7 @@ entries:
     since: 0.1.0
     stability: experimental
     summary: Repeats agent work until every verifier passes or an active limit terminates the run.
-    syntax: ['goal { goal-statement* } [with flow { step* }]']
+    syntax: ['goal { goal-statement* } [with flow { flow-statement* }]']
     semantics:
       - Policies and limits activate in source order before agent work begins.
       - A declarative goal probes its ordered verifier ladder after every hook-visible tool call.
@@ -42,11 +42,11 @@ entries:
     keywords: [flow]
     since: 0.1.0
     stability: experimental
-    summary: Constrains an enclosing goal to repeat an ordered sequence of agent-owned steps between verification probes.
-    syntax: ['goal { goal-statement* } with flow { step+ }']
+    summary: Constrains an enclosing goal to repeat an ordered sequence of agent and runtime-owned statements between verification probes.
+    syntax: ['goal { goal-statement* } with flow { flow-statement+ }']
     semantics:
       - A flow cannot execute or terminate independently of its goal.
-      - Steps execute in source order; only the completed cycle triggers the goal verifier ladder.
+      - Statements execute in source order; only the completed cycle triggers the goal verifier ladder.
       - A failed goal probe begins the next cycle without opening unconstrained agent work.
     postconditions:
       - predicate: enclosing goal controls termination
@@ -112,10 +112,11 @@ entries:
     since: 0.1.0
     stability: experimental
     summary: Names one agent-owned operation in an ordered flow.
-    syntax: ['step name = expression;', 'step name = goal|foreach { ... };']
+    syntax: ['step name = expression;', 'step name = goal|foreach { ... };', 'step child = fork;']
     semantics:
       - Steps are legal only inside flow.
       - Nested loops are themselves steps and must complete before the next step begins.
+      - Fork is a step because Codex owns the subagent spawn action; exec and wait are runtime-owned statements.
     postconditions:
       - predicate: value is bound to name
         description: Later statements can reference the step result by its name.
@@ -132,7 +133,31 @@ entries:
           } with flow {
             step status = bash.run("git status --short");
           }
-    related: [loop.flow, primitive.bash-run]
+    related: [loop.flow, primitive.bash-run, process.fork]
+
+  - id: statement.if
+    title: Conditional branch
+    kind: statement
+    aliases: [if]
+    keywords: [if]
+    since: 0.1.0
+    stability: experimental
+    summary: Selects a runtime-owned flow branch from an evaluated condition.
+    syntax: ['if expression { flow-statement* }']
+    semantics:
+      - Hamster evaluates the condition without asking Codex to choose a branch.
+      - Fork handles expose child and parent booleans for OS-like post-fork control flow.
+    postconditions:
+      - predicate: only the selected branch executes
+        description: False conditions skip the complete body; true conditions enter it.
+        guarantee: enforced
+        evidence: persisted branch state transition
+    examples:
+      - title: Child-only exec
+        language: hamster
+        test: parse
+        source: 'goal { verify done = true; } with flow { step child = fork; if child.child { exec child-work; } wait child; }'
+    related: [process.fork, process.exec, loop.flow]
 
   - id: statement.verify
     title: Verify
@@ -285,13 +310,16 @@ entries:
     title: Fork a process
     kind: process
     aliases: [fork]
+    keywords: [fork]
     since: 0.1.0
     stability: experimental
-    summary: Snapshots the current run when Codex launches a subagent and binds the snapshot to that child.
-    syntax: ['Codex spawn event followed by automatic child attachment']
+    summary: Declares the one agent-owned process step that snapshots the current run while Codex launches a subagent.
+    syntax: ['step name = fork;']
     semantics:
       - The child receives its own run ID, stack, machine, state pointer, limits, and process identity.
       - Parent and child advance independently after the snapshot boundary.
+      - The parent handle has parent=true and child=false; the cloned child receives the inverse values.
+      - Fork handles expose parent, child, and run_id; after wait they also expose status and result.
       - PreToolUse rewrites the spawn message with a one-time fork token; SubagentStart ordering is never used for identity correlation.
       - Until `hamster attach` presents that token, the unbound child is quarantined from other tool calls.
     preconditions:
@@ -315,10 +343,10 @@ entries:
         when: Codex starts a child without an observable parent binding.
         remediation: Bind the parent run before spawning the subagent.
     examples:
-      - title: Automatic fork
-        language: text
-        test: none
-        source: 'No language statement is required; spawning a Codex subagent triggers fork.'
+      - title: Fork a child
+        language: hamster
+        test: parse
+        source: 'goal { verify done = true; } with flow { step child = fork; if child.child { exec child-work; } wait child; }'
     related: [process.attach, process.exec, process.wait, process.return]
 
   - id: process.attach
@@ -357,40 +385,44 @@ entries:
     title: Replace a process image
     kind: process
     aliases: [exec]
+    keywords: [exec]
     since: 0.1.0
     stability: experimental
     summary: Replaces the current run's complete machine, stack, state pointer, and machine-local limits.
-    syntax: ['hamster exec SCRIPT', 'hamster exec --text SOURCE']
+    syntax: ['exec SCRIPT;']
     semantics:
       - Exec preserves process identity and parent/child relationships.
       - The previous machine image cannot resume after a successful replacement.
+      - Exec is runtime-owned; Codex does not issue an exec command.
     preconditions:
-      - predicate: caller has an active bound run
-        description: Exec targets the calling Hamster process.
-        checked: hook
+      - predicate: current runtime branch reaches exec
+        description: Exec targets the current Hamster process after branch evaluation.
+        checked: runtime
     postconditions:
       - predicate: current process contains only the replacement machine image
         description: Machine stack, pointer, and local limits come from the replacement.
         guarantee: enforced
-        evidence: atomic process.exec database transaction
+        evidence: persisted machine replacement transition
     examples:
       - title: Replace child work
-        language: shell
-        test: none
-        source: 'hamster exec .hamster/scripts/build-provider.hmstr'
+        language: hamster
+        test: parse
+        source: 'goal { verify done = true; } with flow { step child = fork; if child.child { exec build-provider; } wait child; }'
     related: [process.fork, process.wait]
 
   - id: process.wait
     title: Wait for a child
     kind: process
     aliases: [wait]
+    keywords: [wait]
     since: 0.1.0
     stability: experimental
     summary: Suspends a parent until a direct child terminates, then returns its structured result.
-    syntax: ['hamster wait CHILD_RUN_ID']
+    syntax: ['wait fork-handle;', 'wait [fork-handle, ...];']
     semantics:
       - Waiting is durable across daemon restarts.
       - The current implementation accepts direct children only.
+      - Wait is runtime-owned; Hamster suspends and wakes the parent without an agent tool call.
     preconditions:
       - predicate: target run is a direct child of caller
         description: Arbitrary process waiting is not yet permitted.
@@ -402,9 +434,9 @@ entries:
         evidence: persisted child status
     examples:
       - title: Join a child
-        language: shell
-        test: none
-        source: 'hamster wait run_1234'
+        language: hamster
+        test: parse
+        source: 'goal { verify done = true; } with flow { step child = fork; if child.child { exec child-work; } wait child; }'
     related: [process.fork, process.exec, process.return]
 
   - id: process.return

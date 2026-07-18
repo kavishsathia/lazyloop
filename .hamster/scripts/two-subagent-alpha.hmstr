@@ -1,0 +1,10 @@
+goal {
+  limit time 5m;
+  limit attempts 3;
+
+  verify output_exists = bash.check("test -f .hamster/demo/alpha.txt");
+  verify output_correct = bash.check("test \"$(cat .hamster/demo/alpha.txt)\" = alpha");
+  return "alpha";
+} with flow {
+  step write_output = bash.run("mkdir -p .hamster/demo && printf 'alpha\\n' > .hamster/demo/alpha.txt");
+}

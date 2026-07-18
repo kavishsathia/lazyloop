@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -22,10 +23,15 @@ type Runner struct {
 	verifier     Verifier
 	obsMu        sync.Mutex
 	observations map[string][]VerificationObservation
+	execResolver func(script, workspace string) (ir.Machine, error)
 }
 
 func New(state *store.Store) *Runner {
 	return NewWithDependencies(state, RealClock{}, CommandVerifier{})
+}
+
+func (r *Runner) SetExecResolver(resolver func(script, workspace string) (ir.Machine, error)) {
+	r.execResolver = resolver
 }
 
 func NewWithDependencies(state *store.Store, clock Clock, verifier Verifier) *Runner {
@@ -78,6 +84,21 @@ func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decisio
 		}
 		environment[state.Name] = decodeToolResponse(event.ToolResponse)
 		run.StateID = state.Next
+	} else if state.Kind == ir.StateFork {
+		if !toolSucceeded(event) {
+			decision := hook.Decision{Permission: "allow", Tracked: true, RunID: run.ID, Reason: "The fork failed and remains current."}
+			return decision, r.recordWithoutAdvance(ctx, event, run, decision)
+		}
+		response, _ := decodeToolResponse(event.ToolResponse).(map[string]any)
+		childRunID, _ := response["hamster_child_run_id"].(string)
+		if childRunID == "" {
+			return hook.Decision{}, errors.New("fork PostToolUse is missing the Hamster child run ID")
+		}
+		environment[state.Name] = map[string]any{
+			"parent": true, "child": false, "run_id": childRunID,
+			"tool": response,
+		}
+		run.StateID = state.Next
 	} else if state.Kind == ir.StateAgentWork {
 		run.StateID = state.Next
 	} else {
@@ -105,8 +126,42 @@ func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decisio
 	}
 	if terminalStatus(run.Status) {
 		err = r.store.FinalizeRun(ctx, run.ID)
+		if err == nil && run.ParentRunID != "" {
+			_, err = r.Start(ctx, run.ParentRunID)
+		}
 	}
 	return decision, err
+}
+
+func (r *Runner) ResumeForkChild(ctx context.Context, runID string) (*store.Run, error) {
+	lock := r.runLock(runID)
+	lock.Lock()
+	defer lock.Unlock()
+	run, err := r.store.GetRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	state, ok := currentState(run)
+	if !ok || state.Kind != ir.StateFork {
+		return run, nil
+	}
+	expected := run.StateID
+	environment, err := decodeEnvironment(run.Variables)
+	if err != nil {
+		return nil, err
+	}
+	environment[state.Name] = map[string]any{
+		"parent": false, "child": true, "run_id": run.ID,
+	}
+	run.StateID = state.Next
+	if err := r.pump(ctx, run, environment); err != nil {
+		return nil, err
+	}
+	run.Variables, _ = json.Marshal(environment)
+	if err := r.store.UpdateRun(ctx, expected, run); err != nil {
+		return nil, err
+	}
+	return run, nil
 }
 
 // SignalGoalAchieved requests an immediate declarative probe. Normal goal
@@ -257,6 +312,11 @@ func (r *Runner) Start(ctx context.Context, runID string) (*store.Run, error) {
 		if err := r.store.FinalizeRun(ctx, run.ID); err != nil {
 			return nil, err
 		}
+		if run.ParentRunID != "" {
+			if _, err := r.Start(ctx, run.ParentRunID); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return run, nil
 }
@@ -272,9 +332,65 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 			return fmt.Errorf("machine %s has no state %s", run.Machine.ID, run.StateID)
 		}
 		switch state.Kind {
-		case ir.StateAgentWork, ir.StateStep:
+		case ir.StateAgentWork, ir.StateStep, ir.StateFork:
 			_, err := enforceLimits(run, environment, r.clock.Now())
 			return err
+		case ir.StateBranch:
+			value, err := r.evaluator(run).Evaluate(ctx, *state.Expression, environment)
+			if err != nil {
+				return err
+			}
+			if truthy(value) {
+				run.StateID = state.OnSuccess
+			} else {
+				run.StateID = state.OnFailure
+			}
+		case ir.StateExec:
+			if r.execResolver == nil {
+				return errors.New("runtime exec resolver is unavailable")
+			}
+			machine, err := r.execResolver(state.Script, run.WorkspaceRoot)
+			if err != nil {
+				return fmt.Errorf("exec %s: %w", state.Script, err)
+			}
+			for key := range environment {
+				delete(environment, key)
+			}
+			run.Machine = machine
+			run.StateID = machine.InitialState
+			run.Status = "running"
+			run.Iteration = 0
+			run.Stack = nil
+			run.ResetProcessState = true
+		case ir.StateWait:
+			value, err := r.evaluator(run).Evaluate(ctx, *state.Expression, environment)
+			if err != nil {
+				return err
+			}
+			handles, err := forkHandles(value)
+			if err != nil {
+				return err
+			}
+			ready := true
+			for _, handle := range handles {
+				childRunID, _ := handle["run_id"].(string)
+				waited, waitErr := r.store.WaitRun(ctx, run.ID, childRunID)
+				if waitErr != nil {
+					return waitErr
+				}
+				if !waited.Ready {
+					ready = false
+					continue
+				}
+				handle["status"] = waited.ChildStatus
+				handle["result"] = decodeToolResponse(waited.Result)
+			}
+			if !ready {
+				run.Status = "waiting"
+				return nil
+			}
+			run.Status = "running"
+			run.StateID = state.Next
 		case ir.StatePolicy:
 			run.StateID = state.Next
 		case ir.StateLimit:
@@ -578,6 +694,34 @@ func toolSucceeded(event hook.Event) bool {
 		return success
 	}
 	return true
+}
+
+func forkHandles(value any) ([]map[string]any, error) {
+	switch typed := value.(type) {
+	case map[string]any:
+		if runID, _ := typed["run_id"].(string); runID == "" {
+			return nil, errors.New("wait target is not a fork handle")
+		}
+		return []map[string]any{typed}, nil
+	case []any:
+		if len(typed) == 0 {
+			return nil, errors.New("wait requires at least one fork handle")
+		}
+		result := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			handle, ok := item.(map[string]any)
+			if !ok {
+				return nil, errors.New("wait list contains a non-fork value")
+			}
+			if runID, _ := handle["run_id"].(string); runID == "" {
+				return nil, errors.New("wait list contains an invalid fork handle")
+			}
+			result = append(result, handle)
+		}
+		return result, nil
+	default:
+		return nil, errors.New("wait requires a fork handle or list of fork handles")
+	}
 }
 
 func foreachKey(machine ir.Machine, suffix string) string {

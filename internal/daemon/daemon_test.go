@@ -9,8 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"hamster/internal/compiler"
 	"hamster/internal/hook"
 	"hamster/internal/ir"
+	"hamster/internal/language"
 	"hamster/internal/protocol"
 	"hamster/internal/store"
 )
@@ -226,14 +228,94 @@ func TestForkLifecycleInjectsTokenQuarantinesAndAttachesExactly(t *testing.T) {
 	}
 }
 
-func TestExecAndWaitControlCommandsUseProcessKernel(t *testing.T) {
+func TestLanguageForkPostStoresParentHandleAndEntersRuntimeWait(t *testing.T) {
+	state, err := store.Open(filepath.Join(t.TempDir(), "hamster.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	program, diagnostics := language.Parse(`goal {
+  verify done = true;
+  return child.result;
+} with flow {
+  step child = fork;
+  if child.child { exec child-work; }
+  wait child;
+}`)
+	if len(diagnostics) != 0 {
+		t.Fatal(diagnostics)
+	}
+	compiled, diagnostics := compiler.Compile(program)
+	if len(diagnostics) != 0 {
+		t.Fatal(diagnostics)
+	}
+	workspace := t.TempDir()
+	scripts := filepath.Join(workspace, ".hamster", "scripts")
+	if err := os.MkdirAll(scripts, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scripts, "child-work.hmstr"), []byte(`goal { verify ready = true; return "child"; }`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := state.CreateRun(context.Background(), store.CreateRunParams{WorkspaceRoot: workspace, CodexSessionID: "language-fork", Machine: compiled.Machines[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(state)
+	if _, err := server.runner.Start(context.Background(), parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	spawn := hook.Event{SessionID: "language-fork", EventName: "PreToolUse", ToolName: "collaborationspawn_agent", ToolUseID: "spawn", ToolInput: json.RawMessage(`{"message":"work","task_name":"child"}`)}
+	params, _ := json.Marshal(hook.HookRequest{Event: spawn})
+	response := server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "fork-pre", Method: "hook.event", Params: params})
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	post := spawn
+	post.EventName = "PostToolUse"
+	post.ToolResponse = json.RawMessage(`{"success":true}`)
+	params, _ = json.Marshal(hook.HookRequest{Event: post})
+	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "fork-post", Method: "hook.event", Params: params})
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	current, err := state.GetRun(context.Background(), parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var variables map[string]any
+	if json.Unmarshal(current.Variables, &variables) != nil {
+		t.Fatalf("variables = %s", current.Variables)
+	}
+	handle, _ := variables["child"].(map[string]any)
+	if current.Status != "waiting" || handle["child"] != false || handle["parent"] != true || handle["run_id"] == "" {
+		t.Fatalf("parent after fork = %#v, variables=%#v", current, variables)
+	}
+	attach := hook.Event{SessionID: "language-fork", AgentID: "agent-child", EventName: "PreToolUse", ToolName: "Bash", ToolUseID: "attach", WorkspaceRoot: workspace}
+	attach.ToolInput, _ = json.Marshal(map[string]string{"command": "hamster attach " + forkToken(spawn.RequestID())})
+	params, _ = json.Marshal(hook.HookRequest{Event: attach})
+	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "fork-attach", Method: "hook.event", Params: params})
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	child, err := state.FindCurrentRun(context.Background(), "language-fork", "agent-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	childState := child.Machine.States[0]
+	if child.ParentRunID != parent.ID || child.Machine.Imperative || childState.Kind != ir.StateAgentWork {
+		t.Fatalf("attached child did not auto-exec replacement: %#v", child)
+	}
+}
+
+func TestAgentCannotBypassRuntimeOwnedExecAndWait(t *testing.T) {
 	state, err := store.Open(filepath.Join(t.TempDir(), "hamster.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer state.Close()
 	machine := ir.Machine{ID: "machine_control", Name: "control", Kind: ir.LoopGoal, InitialState: "state_work", States: []ir.State{{ID: "state_work", Kind: ir.StateAgentWork}}}
-	execRun, err := state.CreateRun(context.Background(), store.CreateRunParams{WorkspaceRoot: "/repo", CodexSessionID: "session-exec-control", Machine: machine})
+	_, err = state.CreateRun(context.Background(), store.CreateRunParams{WorkspaceRoot: "/repo", CodexSessionID: "session-exec-control", Machine: machine})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,12 +329,9 @@ func TestExecAndWaitControlCommandsUseProcessKernel(t *testing.T) {
 	if response.Error != nil {
 		t.Fatalf("exec hook error = %#v", response.Error)
 	}
-	executed, err := state.GetRun(context.Background(), execRun.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if executed.ProcessID != execRun.ProcessID || !executed.Machine.Imperative || executed.StateID != "state_0" {
-		t.Fatalf("executed run = %#v", executed)
+	var decision hook.Decision
+	if json.Unmarshal(response.Result, &decision) != nil || decision.Permission != "deny" || !strings.Contains(decision.Reason, "runtime-owned") {
+		t.Fatalf("exec decision = %#v", decision)
 	}
 
 	parent, err := state.CreateRun(context.Background(), store.CreateRunParams{WorkspaceRoot: "/repo", CodexSessionID: "session-wait-control", Machine: machine})
@@ -272,15 +351,7 @@ func TestExecAndWaitControlCommandsUseProcessKernel(t *testing.T) {
 	if response.Error != nil {
 		t.Fatalf("wait hook error = %#v", response.Error)
 	}
-	waiting, err := state.GetRun(context.Background(), parent.ID)
-	if err != nil || waiting.Status != "waiting" {
-		t.Fatalf("waiting parent = %#v, %v", waiting, err)
-	}
-	if _, err := state.ReturnRun(context.Background(), child.ID, json.RawMessage(`true`)); err != nil {
-		t.Fatal(err)
-	}
-	resumed, err := state.GetRun(context.Background(), parent.ID)
-	if err != nil || resumed.Status != "running" {
-		t.Fatalf("resumed parent = %#v, %v", resumed, err)
+	if json.Unmarshal(response.Result, &decision) != nil || decision.Permission != "deny" || !strings.Contains(decision.Reason, "runtime-owned") {
+		t.Fatalf("wait decision = %#v", decision)
 	}
 }

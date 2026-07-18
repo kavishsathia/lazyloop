@@ -37,6 +37,17 @@ ON CONFLICT(fork_key) DO NOTHING`, forkKey, child.ID, now, child.ID)
 	return child, nil
 }
 
+func (s *Store) FindFork(ctx context.Context, forkKey string) (*Run, error) {
+	if forkKey == "" {
+		return nil, errors.New("fork key is required")
+	}
+	var childRunID string
+	if err := s.db.QueryRowContext(ctx, `SELECT child_run_id FROM pending_forks WHERE fork_key=?`, forkKey).Scan(&childRunID); err != nil {
+		return nil, err
+	}
+	return s.GetRun(ctx, childRunID)
+}
+
 func (s *Store) ClaimFork(ctx context.Context, codexSessionID, childAgentID, forkKey string) (*Run, error) {
 	if codexSessionID == "" || childAgentID == "" || forkKey == "" {
 		return nil, errors.New("Codex session ID, child agent ID, and fork token are required")

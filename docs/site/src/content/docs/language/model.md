@@ -11,9 +11,18 @@ verifier to pass; an active limit can terminate the loop first.
 
 ## Agent work and runtime work
 
-`step` is agent-owned. The Codex agent performs it, while hooks observe and constrain calls where Codex exposes them. `verify` is runtime-owned: Hamster executes the verifier and persists its result as transition evidence.
+`step` is agent-owned. The Codex agent performs it, while hooks observe and constrain calls where Codex exposes them. `verify` is runtime-owned: Hamster executes the verifier and persists its result as transition evidence. Process control follows the same boundary: `fork` is a step because Codex must spawn the subagent, while `if`, `exec`, and `wait` are executed by Hamster.
 
 This distinction is deliberate. Hamster never treats the agent's claim that tests passed as proof when it can run the check independently.
+
+## Process control
+
+`step child = fork;` snapshots the complete process. The parent receives a
+handle with `parent == true`; after token attachment, the child receives the
+same handle with `child == true`. Hamster evaluates child/parent branches,
+automatically executes `exec script;` by replacing the complete child machine,
+and implements `wait child;` durably. Codex never issues exec or wait commands
+for language-level process control.
 
 ## Loop forms and verification cadence
 
