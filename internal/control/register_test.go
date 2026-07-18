@@ -59,6 +59,12 @@ flow build {
 	if len(run.Stack) != 1 || run.Stack[0].Machine.Name != "build" || run.Stack[0].Machine.Kind != ir.LoopFlow {
 		t.Fatalf("current machine = %q %q, stack = %#v", run.Machine.Name, run.Machine.Kind, run.Stack)
 	}
+	replayed, err := RegisterFromHook(ctx, state, hamsterruntime.New(state), event, Command{
+		Name: "run", Args: []string{script, "--entry", "build"},
+	})
+	if err != nil || replayed.RunID != decision.RunID || replayed.Context != decision.Context {
+		t.Fatalf("replayed registration = %#v, %v", replayed, err)
+	}
 }
 
 func TestHookLeavesExplicitBindingToCLI(t *testing.T) {

@@ -40,6 +40,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if _, err := store.Recover(context.Background()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("recover state database: %w", err)
+	}
 	return store, nil
 }
 

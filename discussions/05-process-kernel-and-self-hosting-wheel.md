@@ -79,6 +79,20 @@ second value.
 Wait state is stored in SQLite rather than in a blocked goroutine, so daemon
 and computer restarts do not lose the relationship.
 
+## Crash recovery and replay
+
+Opening the daemon database runs an idempotent recovery transaction. It
+rebuilds a missing pending-fork row from any durable `PENDING:<token>` process,
+wakes parents whose children reached a terminal state, completes their wait
+records, and clears stale bindings to terminal runs. `limit_exceeded` is a
+terminal process status and releases its binding just like normal completion.
+
+Hook-owned CLI operations persist their full decision by Codex request ID.
+Replaying `run`, `signal`, `attach`, `exec`, `wait`, or `kill` therefore returns
+the original decision instead of applying the mutation twice. Runtime state
+updates and hook event insertion remain atomic through `ApplyEvent`; database
+recovery closes the deliberately separate state-update/finalization boundary.
+
 ## Kernel boundary
 
 This milestone deliberately exposes a small kernel:

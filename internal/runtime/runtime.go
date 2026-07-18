@@ -99,7 +99,7 @@ func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decisio
 	if err != nil {
 		return decision, err
 	}
-	if run.Status == "complete" {
+	if terminalStatus(run.Status) {
 		err = r.store.FinalizeRun(ctx, run.ID)
 	}
 	return decision, err
@@ -184,7 +184,7 @@ func (r *Runner) SignalGoalAchieved(ctx context.Context, event hook.Event) (hook
 		}
 		return decisionFromEvent(existing, run.ID), nil
 	}
-	if run.Status == "complete" {
+	if terminalStatus(run.Status) {
 		err = r.store.FinalizeRun(ctx, run.ID)
 	}
 	return decision, err
@@ -250,12 +250,16 @@ func (r *Runner) Start(ctx context.Context, runID string) (*store.Run, error) {
 	if err := r.store.UpdateRun(ctx, expected, run); err != nil {
 		return nil, err
 	}
-	if run.Status == "complete" {
+	if terminalStatus(run.Status) {
 		if err := r.store.FinalizeRun(ctx, run.ID); err != nil {
 			return nil, err
 		}
 	}
 	return run, nil
+}
+
+func terminalStatus(status string) bool {
+	return status == "complete" || status == "killed" || status == "failed" || status == "limit_exceeded"
 }
 
 func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environment) error {

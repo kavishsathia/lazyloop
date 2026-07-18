@@ -102,6 +102,9 @@ func TestAttemptLimitStartsAtDeclaration(t *testing.T) {
 	if finished.Status != "limit_exceeded" || finished.Iteration != 2 {
 		t.Fatalf("finished status = %s, iteration = %d", finished.Status, finished.Iteration)
 	}
+	if _, err := runner.store.FindCurrentRun(context.Background(), "session", ""); err != sql.ErrNoRows {
+		t.Fatalf("limit-exceeded run remains bound: %v", err)
+	}
 }
 
 func TestForeachCollectsInnerLoopReturns(t *testing.T) {

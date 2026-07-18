@@ -18,6 +18,30 @@ import (
 )
 
 func RegisterFromHook(ctx context.Context, state *store.Store, runner *hamsterruntime.Runner, event hook.Event, command Command) (hook.Decision, error) {
+	if existing, err := state.GetEventDecision(ctx, event.RequestID()); err == nil {
+		return controlDecision(existing), nil
+	} else if err != sql.ErrNoRows {
+		return hook.Decision{}, err
+	}
+	decision, err := registerFromHook(ctx, state, runner, event, command)
+	if err != nil {
+		return hook.Decision{}, err
+	}
+	payload := event.Raw
+	if len(payload) == 0 {
+		payload = hook.MarshalEvent(event)
+	}
+	recorded, _, err := state.RecordEvent(ctx, event.RequestID(), decision.RunID, event.EventName, payload, store.EventDecision{
+		Decision: decision.Permission, Reason: decision.Reason, Remediation: decision.Remediation,
+		Context: decision.Context, RunID: decision.RunID,
+	})
+	if err != nil {
+		return hook.Decision{}, err
+	}
+	return controlDecision(recorded), nil
+}
+
+func registerFromHook(ctx context.Context, state *store.Store, runner *hamsterruntime.Runner, event hook.Event, command Command) (hook.Decision, error) {
 	if command.Name == "kill" {
 		return handleKillCommand(ctx, state, event, command.Args)
 	}
@@ -84,6 +108,13 @@ func RegisterFromHook(ctx context.Context, state *store.Store, runner *hamsterru
 		Permission: "allow", Tracked: true, RunID: run.ID,
 		Context: fmt.Sprintf("Hamster started run %s for %s at state %s. Follow this loop until Hamster reports completion or escalation.", run.ID, machineLabel(machine), run.StateID),
 	}, nil
+}
+
+func controlDecision(decision store.EventDecision) hook.Decision {
+	return hook.Decision{
+		Permission: decision.Decision, Reason: decision.Reason, Remediation: decision.Remediation,
+		Context: decision.Context, Tracked: decision.RunID != "", RunID: decision.RunID,
+	}
 }
 
 func handleExecCommand(ctx context.Context, state *store.Store, runner *hamsterruntime.Runner, event hook.Event, arguments []string) (hook.Decision, error) {

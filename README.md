@@ -77,6 +77,9 @@ Runtime state is owned by one per-user daemon in `~/.hamster/hamster.db`. The
 current bootstrap supports persistent `goal`, `flow`, nested loops, `foreach`,
 prospective time and attempt limits, `allow`/`disallow`, exact `bash.run`
 steps, independent `bash.check` verifiers, and the first process kernel.
+On every database open, Hamster idempotently repairs terminal bindings,
+completed waits, and fork snapshots interrupted before pending-token
+registration. Replayed hook control requests reuse their persisted decision.
 
 When a bound Codex agent spawns a subagent, Hamster snapshots the complete run
 at the spawn boundary and rewrites the spawn message with a one-time

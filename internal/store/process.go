@@ -381,5 +381,5 @@ WHERE id IN (SELECT parent_run_id FROM process_waits WHERE child_run_id=? AND co
 }
 
 func terminalProcessStatus(status string) bool {
-	return status == "complete" || status == "killed" || status == "failed"
+	return status == "complete" || status == "killed" || status == "failed" || status == "limit_exceeded"
 }
