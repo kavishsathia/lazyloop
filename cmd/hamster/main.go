@@ -482,36 +482,20 @@ func hookCommand(ctx context.Context) error {
 }
 
 func runCommand(ctx context.Context, arguments []string) error {
-	flags := flag.NewFlagSet("run", flag.ContinueOnError)
-	session := flags.String("session", "", "Codex session ID for an explicit run")
-	agent := flags.String("agent", "", "Codex agent ID")
-	homeFlag := flags.String("home", "", "user home directory")
-	entry := flags.String("entry", "", "named loop to execute")
-	text := flags.String("text", "", "ephemeral loop source")
-	if err := flags.Parse(arguments); err != nil {
-		return err
-	}
-	if *session == "" {
-		fmt.Println("Hamster run registration is handled by the Codex pre-tool hook.")
-		return nil
-	}
-	var machinePath string
-	if flags.NArg() > 0 {
-		machinePath = flags.Arg(0)
-	}
-	var machine any
-	var err error
-	if *text != "" {
-		machine, err = control.CompileSource(*text, *entry)
-	} else if machinePath != "" {
-		machine, err = control.CompileFile(machinePath, *entry)
-	} else {
-		return errors.New("run requires a script or --text")
-	}
+	invocation, err := control.ParseRunArguments(arguments)
 	if err != nil {
 		return err
 	}
-	home, err := resolveHome(*homeFlag)
+	if invocation.Session == "" {
+		fmt.Println("Hamster run registration is handled by the Codex pre-tool hook.")
+		return nil
+	}
+	cwd, _ := os.Getwd()
+	machine, err := control.ResolveRunMachine(invocation, cwd)
+	if err != nil {
+		return err
+	}
+	home, err := resolveHome(invocation.Home)
 	if err != nil {
 		return err
 	}
@@ -519,8 +503,7 @@ func runCommand(ctx context.Context, arguments []string) error {
 	if err != nil {
 		return err
 	}
-	cwd, _ := os.Getwd()
-	params := map[string]any{"workspace_root": cwd, "codex_session_id": *session, "agent_id": *agent, "machine": machine}
+	params := map[string]any{"workspace_root": cwd, "codex_session_id": invocation.Session, "agent_id": invocation.Agent, "machine": machine}
 	var created store.Run
 	if err := client.Call(ctx, requestID(), "run.create", params, &created); err != nil {
 		return err
@@ -732,12 +715,19 @@ func printJSON(value any) error {
 }
 
 func printRunSummary(run store.Run) error {
-	machine := run.Machine.Name
-	if machine == "" {
-		machine = "anonymous " + string(run.Machine.Kind)
+	workflow := run.Machine.Name
+	if len(run.Stack) > 0 {
+		workflow = run.Stack[0].Machine.Name
+	}
+	if workflow == "" {
+		workflow = "anonymous " + string(run.Machine.Kind)
+	}
+	currentMachine := run.Machine.Name
+	if currentMachine == "" {
+		currentMachine = "anonymous " + string(run.Machine.Kind)
 	}
 	return printJSON(map[string]any{
-		"run_id": run.ID, "status": run.Status, "machine": machine,
+		"run_id": run.ID, "status": run.Status, "workflow": workflow, "current_machine": currentMachine,
 		"state": run.StateID, "iteration": run.Iteration, "stack_depth": len(run.Stack), "result": run.Result,
 		"termination_reason": run.TerminationReason,
 	})

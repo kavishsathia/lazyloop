@@ -40,11 +40,17 @@ func RegisterFromHook(ctx context.Context, state *store.Store, runner *hamsterru
 	if command.Name != "run" {
 		return hook.Decision{Permission: "allow", Context: "Hamster control command accepted."}, nil
 	}
-	source, entry, err := resolveSource(command.Args, event.WorkspaceRoot)
+	arguments, err := ParseRunArguments(command.Args)
 	if err != nil {
 		return hook.Decision{Permission: "deny", Reason: err.Error(), Remediation: "Correct the Hamster run command and try again."}, nil
 	}
-	machine, err := compileMachine(source, entry)
+	if arguments.Session != "" {
+		return hook.Decision{
+			Permission: "allow",
+			Context:    "Hamster left this explicitly bound run command to the CLI; the hook did not create a duplicate run.",
+		}, nil
+	}
+	machine, err := ResolveRunMachine(arguments, event.WorkspaceRoot)
 	if err != nil {
 		return hook.Decision{Permission: "deny", Reason: err.Error(), Remediation: "Fix the Hamster script diagnostics and run it again."}, nil
 	}
@@ -249,34 +255,19 @@ func compileMachine(source, entry string) (ir.Machine, error) {
 }
 
 func resolveSource(arguments []string, cwd string) (source, entry string, err error) {
-	var script string
-	for index := 0; index < len(arguments); index++ {
-		switch arguments[index] {
-		case "--text":
-			index++
-			if index >= len(arguments) {
-				return "", "", fmt.Errorf("--text requires a loop")
-			}
-			source = arguments[index]
-		case "--entry":
-			index++
-			if index >= len(arguments) {
-				return "", "", fmt.Errorf("--entry requires a loop name")
-			}
-			entry = arguments[index]
-		default:
-			if strings.HasPrefix(arguments[index], "-") {
-				return "", "", fmt.Errorf("unknown run option %s", arguments[index])
-			}
-			script = arguments[index]
-		}
+	parsed, err := ParseRunArguments(arguments)
+	if err != nil {
+		return "", "", err
 	}
-	if source != "" {
-		return source, entry, nil
+	source, err = resolveRunSource(parsed, cwd)
+	return source, parsed.Entry, err
+}
+
+func resolveRunSource(arguments RunArguments, cwd string) (string, error) {
+	if arguments.Text != "" {
+		return arguments.Text, nil
 	}
-	if script == "" {
-		return "", "", fmt.Errorf("run requires a script or --text")
-	}
+	script := arguments.Script
 	paths := []string{script}
 	if !strings.ContainsRune(script, filepath.Separator) && filepath.Ext(script) == "" {
 		paths = []string{filepath.Join(cwd, ".hamster", "scripts", script+".hmstr")}
@@ -289,8 +280,8 @@ func resolveSource(arguments []string, cwd string) (source, entry string, err er
 	for _, path := range paths {
 		contents, readErr := os.ReadFile(path)
 		if readErr == nil {
-			return string(contents), entry, nil
+			return string(contents), nil
 		}
 	}
-	return "", "", fmt.Errorf("Hamster script %q was not found", script)
+	return "", fmt.Errorf("Hamster script %q was not found", script)
 }
