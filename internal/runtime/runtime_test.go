@@ -180,9 +180,9 @@ func TestTwoForkedChildrenExecAutomaticallyAndWaitWakesParent(t *testing.T) {
 	if waiting.Status != "waiting" || waiting.Machine.States[stateIndex(waiting.Machine, waiting.StateID)].Kind != ir.StateWait {
 		t.Fatalf("parent did not wait automatically: %#v", waiting)
 	}
-	for index, key := range []string{"fork-alpha", "fork-beta"} {
+	for index := range []string{"fork-alpha", "fork-beta"} {
 		agentID := fmt.Sprintf("agent-%d", index)
-		child, err := runner.store.ClaimFork(context.Background(), "session", agentID, key)
+		child, err := runner.store.ClaimPendingFork(context.Background(), "session", agentID)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -320,8 +320,8 @@ entries:
       - Parent and child advance independently after the snapshot boundary.
       - The parent handle has parent=true and child=false; the cloned child receives the inverse values.
       - Fork handles expose parent, child, and run_id; after wait they also expose status and result.
-      - PreToolUse rewrites the spawn message with a one-time fork token; SubagentStart ordering is never used for identity correlation.
-      - Until `hamster attach` presents that token, the unbound child is quarantined from other tool calls.
+      - The first hook carrying the child's stable session_id and agent_id atomically binds that identity to the pending snapshot.
+      - Every later child hook routes directly through the same stable identity; no agent command or prompt rewriting is required.
     preconditions:
       - predicate: parent agent has an active bound run
         description: Hamster needs a current process image to snapshot.
@@ -334,10 +334,10 @@ entries:
         description: Mutating the child does not move the parent state pointer.
         guarantee: enforced
         evidence: persisted child run with parent_run_id and fork snapshot
-      - predicate: child agent ID is bound to the token-selected child run ID
-        description: Later hook events route to the exact snapshot named in the child instructions.
+      - predicate: child agent ID is bound to the pending child run ID
+        description: Later hook events route directly to the snapshot selected by the observed fork order.
         guarantee: enforced
-        evidence: atomic fork-token claim plus Codex agent_id
+        evidence: atomic pending-fork claim plus Codex session_id and agent_id
     failures:
       - code: orphan_subagent
         when: Codex starts a child without an observable parent binding.
@@ -347,39 +347,7 @@ entries:
         language: hamster
         test: parse
         source: 'goal { verify done = true; } with flow { step child = fork; if child.child { exec child-work; } wait child; }'
-    related: [process.attach, process.exec, process.wait, process.return]
-
-  - id: process.attach
-    title: Attach a forked process
-    kind: process
-    aliases: [attach]
-    since: 0.1.0
-    stability: experimental
-    summary: Binds a newly started Codex subagent to the exact Hamster snapshot selected by its injected fork token.
-    syntax: ['hamster attach FORK_TOKEN']
-    semantics:
-      - Hamster injects the complete command into the child message by rewriting the parent spawn tool input.
-      - A child with pending session forks is denied all other hook-visible local tool calls until attachment succeeds.
-      - Tokens may be claimed in any order, so concurrent subagents cannot exchange snapshots accidentally.
-    preconditions:
-      - predicate: token names a pending fork in the parent Codex session
-        description: Tokens cannot claim a snapshot from another session or a different child after attachment.
-        checked: runtime
-    postconditions:
-      - predicate: child agent has exactly one current forked run
-        description: The stable Codex agent ID routes every later hook event to the selected run.
-        guarantee: enforced
-        evidence: unique process binding and claimed pending_forks row
-    failures:
-      - code: invalid_token
-        when: The token is absent, belongs to another session, or was claimed by another agent.
-        remediation: Use the exact attach command injected into the initial subagent instructions.
-    examples:
-      - title: Automatic child handshake
-        language: shell
-        test: none
-        source: 'hamster attach fork_0123456789abcdef0123456789abcdef'
-    related: [process.fork, process.exec]
+    related: [process.exec, process.wait, process.return]
 
   - id: process.exec
     title: Replace a process image
@@ -423,6 +391,7 @@ entries:
       - Waiting is durable across daemon restarts.
       - The current implementation accepts direct children only.
       - Wait is runtime-owned; Hamster suspends and wakes the parent without an agent tool call.
+      - While suspended, Codex's native wait_agent operation is allowed to yield; it never advances the state machine itself.
     preconditions:
       - predicate: target run is a direct child of caller
         description: Arbitrary process waiting is not yet permitted.

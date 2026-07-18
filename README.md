@@ -80,15 +80,15 @@ current bootstrap supports persistent `goal`, `flow`, nested loops, `foreach`,
 prospective time and attempt limits, `allow`/`disallow`, exact `bash.run`
 steps, independent `bash.check` verifiers, and OS-like `fork`/`exec`/`wait`.
 On every database open, Hamster idempotently repairs terminal bindings,
-completed waits, and fork snapshots interrupted before pending-token
-registration. Replayed hook control requests reuse their persisted decision.
+completed waits, and interrupted fork snapshots. Replayed hook control
+requests reuse their persisted decision.
 
 When a flow reaches `step child = fork;`, Hamster permits exactly one Codex
-subagent spawn, snapshots the complete run, and rewrites the spawn message with a one-time
-`hamster attach` command. The child is quarantined from other tool calls until
-that token binds its new `agent_id` to the exact snapshot. Parent and child
-receive different fork-handle attributes. Hamster—not Codex—then performs the
-child-only exec and parent wait transitions:
+subagent spawn and snapshots the complete run. The child's stable
+`(session_id, agent_id)` hook identity is automatically bound to that pending
+snapshot when it first appears. Parent and child receive different fork-handle
+attributes. Hamster—not Codex—then performs the child-only exec and parent wait
+transitions:
 
 ```hmstr
 step child = fork;
@@ -100,8 +100,8 @@ wait child;
 
 Normal loop `return` completes the child, clears its binding, and wakes a
 waiting parent. `exec` clears the old machine stack and machine-local limits;
-`wait` currently accepts direct children. Simultaneous pending subagents may
-start and attach in any order without cross-binding their state machines.
+`wait` currently accepts direct children. While suspended, Codex may use its
+native `wait_agent` operation; Hamster alone evaluates the language-level wait.
 
 ## Runtime observability
 

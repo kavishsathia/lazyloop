@@ -20,8 +20,8 @@ type WaitResult struct {
 }
 
 // PrepareFork snapshots the parent before Codex starts a child whose agent ID
-// is not known yet. The fork key is injected into the child prompt and later
-// presented to ClaimFork, avoiding any reliance on lifecycle event ordering.
+// is not known yet. The fork key is internal and only makes a replayed spawn
+// hook idempotent; it is never exposed to or claimed by the agent.
 func (s *Store) PrepareFork(ctx context.Context, parentRunID, forkKey string) (*Run, error) {
 	child, err := s.ForkRun(ctx, parentRunID, "PENDING:"+forkKey, forkKey)
 	if err != nil {
@@ -48,24 +48,26 @@ func (s *Store) FindFork(ctx context.Context, forkKey string) (*Run, error) {
 	return s.GetRun(ctx, childRunID)
 }
 
-func (s *Store) ClaimFork(ctx context.Context, codexSessionID, childAgentID, forkKey string) (*Run, error) {
-	if codexSessionID == "" || childAgentID == "" || forkKey == "" {
-		return nil, errors.New("Codex session ID, child agent ID, and fork token are required")
+// ClaimPendingFork binds the stable identity present on every child hook to the
+// oldest unclaimed fork in the same Codex session. Codex emits SubagentStart
+// for each spawn before the child can make an ordinary tool call; callers also
+// invoke this on an unbound ordinary child hook so a missed lifecycle hook is
+// harmless.
+func (s *Store) ClaimPendingFork(ctx context.Context, codexSessionID, childAgentID string) (*Run, error) {
+	if codexSessionID == "" || childAgentID == "" {
+		return nil, errors.New("Codex session ID and child agent ID are required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	var existingRunID, existingForkKey string
-	err = tx.QueryRowContext(ctx, `SELECT r.id, r.fork_key FROM runs r
+	var existingRunID string
+	err = tx.QueryRowContext(ctx, `SELECT r.id FROM runs r
 JOIN processes p ON p.current_run_id=r.id
 JOIN sessions s ON s.id=p.session_id
-WHERE s.codex_session_id=? AND p.agent_id=?`, codexSessionID, childAgentID).Scan(&existingRunID, &existingForkKey)
+WHERE s.codex_session_id=? AND p.agent_id=?`, codexSessionID, childAgentID).Scan(&existingRunID)
 	if err == nil {
-		if existingForkKey != forkKey {
-			return nil, errors.New("Codex agent is already bound to a different Hamster fork")
-		}
 		if err := tx.Rollback(); err != nil {
 			return nil, err
 		}
@@ -74,27 +76,16 @@ WHERE s.codex_session_id=? AND p.agent_id=?`, codexSessionID, childAgentID).Scan
 	if err != sql.ErrNoRows {
 		return nil, err
 	}
-	var childRunID, processID, status, currentAgentID string
-	err = tx.QueryRowContext(ctx, `SELECT pf.child_run_id, r.process_id, pf.status, p.agent_id
+	var childRunID, processID, forkKey string
+	err = tx.QueryRowContext(ctx, `SELECT pf.child_run_id, r.process_id, pf.fork_key
 FROM pending_forks pf
 JOIN sessions s ON s.id=pf.session_id
 JOIN runs r ON r.id=pf.child_run_id
-JOIN processes p ON p.id=r.process_id
-WHERE s.codex_session_id=? AND pf.fork_key=?`, codexSessionID, forkKey).Scan(&childRunID, &processID, &status, &currentAgentID)
+WHERE s.codex_session_id=? AND pf.status='pending'
+ORDER BY pf.created_at, pf.fork_key
+LIMIT 1`, codexSessionID).Scan(&childRunID, &processID, &forkKey)
 	if err != nil {
 		return nil, err
-	}
-	if status == "claimed" {
-		if currentAgentID != childAgentID {
-			return nil, errors.New("fork token was already claimed by a different Codex agent")
-		}
-		if err := tx.Rollback(); err != nil {
-			return nil, err
-		}
-		return s.GetRun(ctx, childRunID)
-	}
-	if status != "pending" {
-		return nil, fmt.Errorf("fork token has status %s", status)
 	}
 	now := formatTime(time.Now().UTC())
 	if _, err := tx.ExecContext(ctx, `UPDATE processes SET agent_id=?, updated_at=? WHERE id=?`, childAgentID, now, processID); err != nil {
@@ -111,10 +102,6 @@ WHERE s.codex_session_id=? AND pf.fork_key=?`, codexSessionID, forkKey).Scan(&ch
 	if changed != 1 {
 		return nil, errors.New("pending fork changed concurrently")
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_quarantines SET cleared_at=?
-WHERE session_id=(SELECT id FROM sessions WHERE codex_session_id=?) AND agent_id=? AND cleared_at IS NULL`, now, codexSessionID, childAgentID); err != nil {
-		return nil, err
-	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -126,36 +113,6 @@ func (s *Store) HasPendingFork(ctx context.Context, codexSessionID string) (bool
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
 SELECT 1 FROM pending_forks pf JOIN sessions s ON s.id=pf.session_id
 WHERE s.codex_session_id=? AND pf.status='pending')`, codexSessionID).Scan(&exists)
-	return exists == 1, err
-}
-
-func (s *Store) QuarantineSubagent(ctx context.Context, codexSessionID, childAgentID string) (bool, error) {
-	if codexSessionID == "" || childAgentID == "" {
-		return false, errors.New("Codex session ID and child agent ID are required")
-	}
-	var managed int
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
-SELECT 1 FROM processes p
-JOIN sessions s ON s.id=p.session_id
-JOIN runs r ON r.id=p.current_run_id
-WHERE s.codex_session_id=? AND r.status IN ('running', 'waiting')
-UNION ALL
-SELECT 1 FROM pending_forks pf JOIN sessions s ON s.id=pf.session_id
-WHERE s.codex_session_id=? AND pf.status='pending')`, codexSessionID, codexSessionID).Scan(&managed)
-	if err != nil || managed == 0 {
-		return false, err
-	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO agent_quarantines(session_id, agent_id, created_at)
-SELECT id, ?, ? FROM sessions WHERE codex_session_id=?
-ON CONFLICT(session_id, agent_id) DO UPDATE SET cleared_at=NULL`, childAgentID, formatTime(time.Now().UTC()), codexSessionID)
-	return err == nil, err
-}
-
-func (s *Store) IsSubagentQuarantined(ctx context.Context, codexSessionID, childAgentID string) (bool, error) {
-	var exists int
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
-SELECT 1 FROM agent_quarantines q JOIN sessions s ON s.id=q.session_id
-WHERE s.codex_session_id=? AND q.agent_id=? AND q.cleared_at IS NULL)`, codexSessionID, childAgentID).Scan(&exists)
 	return exists == 1, err
 }
 

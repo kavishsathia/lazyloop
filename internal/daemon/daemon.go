@@ -272,6 +272,21 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 	case "hook.event":
 		var params hook.HookRequest
 		if err = json.Unmarshal(request.Params, &params); err == nil {
+			var boundChild *store.Run
+			if params.Event.AgentID != "" {
+				boundChild, err = s.store.FindCurrentRun(ctx, params.Event.SessionID, params.Event.AgentID)
+				if err == sql.ErrNoRows {
+					boundChild, err = s.store.ClaimPendingFork(ctx, params.Event.SessionID, params.Event.AgentID)
+					if err == nil {
+						boundChild, err = s.runner.ResumeForkChild(ctx, boundChild.ID)
+					} else if err == sql.ErrNoRows {
+						err = nil
+					}
+				}
+			}
+			if err != nil {
+				break
+			}
 			before := s.traceSnapshot(ctx, params.Event)
 			var command control.Command
 			var isControl bool
@@ -282,18 +297,10 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 				break
 			}
 			if params.Event.EventName == "SubagentStart" {
-				var child *store.Run
-				child, err = s.store.FindCurrentRun(ctx, params.Event.SessionID, params.Event.AgentID)
-				if err == nil {
-					result = hook.Decision{Permission: "allow", Tracked: true, RunID: child.ID, Context: fmt.Sprintf("Hamster found this Codex subagent already attached to forked run %s.", child.ID)}
-				} else if err == sql.ErrNoRows {
-					var quarantined bool
-					quarantined, err = s.store.QuarantineSubagent(ctx, params.Event.SessionID, params.Event.AgentID)
-					if err == nil && quarantined {
-						result = hook.Decision{Permission: "allow", Context: "Hamster has quarantined this subagent until it runs the exact hamster attach command injected into its initial instructions."}
-					} else if err == nil {
-						result = hook.Decision{Permission: "allow", Context: "No pending Hamster fork is associated with this subagent."}
-					}
+				if boundChild != nil {
+					result = hook.Decision{Permission: "allow", Tracked: true, RunID: boundChild.ID, Context: fmt.Sprintf("Hamster automatically bound Codex agent %s to forked run %s.", params.Event.AgentID, boundChild.ID)}
+				} else {
+					result = hook.Decision{Permission: "allow", Context: "No pending Hamster fork is associated with this subagent."}
 				}
 			} else if isControl && params.Event.EventName == "PreToolUse" {
 				result, err = control.RegisterFromHook(ctx, s.store, s.runner, params.Event, command)
@@ -302,7 +309,7 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 			} else if params.Event.EventName == "PostToolUse" {
 				if isSpawnTool(params.Event.ToolName) {
 					var child *store.Run
-					child, err = s.store.FindFork(ctx, forkTokenForEvent(params.Event))
+					child, err = s.store.FindFork(ctx, forkKeyForEvent(params.Event))
 					if err == nil {
 						var response map[string]any
 						if json.Unmarshal(params.Event.ToolResponse, &response) != nil || response == nil {
@@ -321,29 +328,12 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 				decision, err = hook.NewEngine(s.store).Decide(ctx, params.Event)
 				if err == nil && params.Event.EventName == "PreToolUse" && isSpawnTool(params.Event.ToolName) && decision.Permission == "allow" && decision.Tracked {
 					var child *store.Run
-					token := forkToken(params.Event.RequestID())
-					decision.UpdatedInput, err = injectForkAttachment(params.Event.ToolInput, token)
+					child, err = s.store.PrepareFork(ctx, decision.RunID, forkKey(params.Event.RequestID()))
 					if err == nil {
-						child, err = s.store.PrepareFork(ctx, decision.RunID, token)
-					}
-					if err == nil {
-						decision.Context = fmt.Sprintf("Hamster prepared exact forked run %s and injected its one-time attachment token into the child instructions.", child.ID)
+						decision.Context = fmt.Sprintf("Hamster prepared forked run %s; the child's stable hook identity will be bound automatically.", child.ID)
 					}
 				}
 				result = decision
-			}
-			if err == nil && params.Event.EventName == "PreToolUse" {
-				if decision, ok := result.(hook.Decision); ok && decision.Permission == "allow" && !decision.Tracked && params.Event.AgentID != "" {
-					var quarantined bool
-					quarantined, err = s.store.IsSubagentQuarantined(ctx, params.Event.SessionID, params.Event.AgentID)
-					if err == nil && quarantined {
-						result = hook.Decision{
-							Permission:  "deny",
-							Reason:      "This Codex subagent is quarantined because it has not attached to its exact Hamster fork.",
-							Remediation: "Run the hamster attach FORK_TOKEN command from the initial subagent instructions before any other tool call.",
-						}
-					}
-				}
 			}
 			if err == nil {
 				after := s.traceSnapshot(ctx, params.Event)
@@ -390,27 +380,14 @@ func isSpawnTool(name string) bool {
 	return strings.EqualFold(name, "collaborationspawn_agent") || strings.EqualFold(name, "spawn_agent") || strings.EqualFold(name, "Agent")
 }
 
-func forkToken(requestID string) string {
+func forkKey(requestID string) string {
 	digest := sha256.Sum256([]byte(requestID))
 	return fmt.Sprintf("fork_%x", digest[:16])
 }
 
-func forkTokenForEvent(event hook.Event) string {
+func forkKeyForEvent(event hook.Event) string {
 	event.EventName = "PreToolUse"
-	return forkToken(event.RequestID())
-}
-
-func injectForkAttachment(input json.RawMessage, token string) (json.RawMessage, error) {
-	var arguments map[string]any
-	if err := json.Unmarshal(input, &arguments); err != nil {
-		return nil, fmt.Errorf("decode Codex spawn input: %w", err)
-	}
-	message, ok := arguments["message"].(string)
-	if !ok {
-		return nil, errors.New("Codex spawn input has no string message to receive the Hamster fork token")
-	}
-	arguments["message"] = message + fmt.Sprintf("\n\n[Hamster process attachment]\nBefore any other tool call, run exactly: hamster attach %s\nThis binds your Codex agent identity to the correct forked state machine.", token)
-	return json.Marshal(arguments)
+	return forkKey(event.RequestID())
 }
 
 func (s *Server) traceSnapshot(ctx context.Context, event hook.Event) *trace.StateSnapshot {

@@ -37,16 +37,12 @@ event creates the fork snapshot. The child receives a new process and run while 
 - Parent ancestry.
 
 The spawn tool does not expose the future `agent_id`, so the process initially
-uses a private pending identity. Hamster uses the documented Codex
-`PreToolUse.updatedInput` response to append a one-time `hamster attach` command
-to the child message. `SubagentStart` supplies context but never guesses a
-binding. Until the child presents its token, Hamster quarantines its other tool
-calls. The atomic token claim replaces the pending identity with the stable
-child `agent_id`.
-
-This removes the ordering assumption from the Codex 0.144.5 fixture corpus.
-Concurrent children may attach in any order, and replaying either spawn or
-attach remains idempotent.
+uses a private pending identity. The first child hook supplies the stable
+`(session_id, agent_id)` pair and atomically replaces that pending identity.
+Every later child hook carries the same pair and routes directly to the bound
+run. The agent does not execute an attachment command, and Hamster does not
+rewrite Codex's encrypted spawn message. Replayed spawn and lifecycle hooks
+remain idempotent.
 
 ## Exec
 

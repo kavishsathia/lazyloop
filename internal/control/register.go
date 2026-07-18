@@ -51,20 +51,6 @@ func registerFromHook(ctx context.Context, state *store.Store, runner *hamsterru
 		}
 		return runner.SignalGoalAchieved(ctx, event)
 	}
-	if command.Name == "attach" {
-		if len(command.Args) != 1 {
-			return hook.Decision{Permission: "deny", Reason: "usage: hamster attach FORK_TOKEN", Remediation: "Use the exact attachment command injected into the subagent instructions."}, nil
-		}
-		child, err := state.ClaimFork(ctx, event.SessionID, event.AgentID, command.Args[0])
-		if err != nil {
-			return hook.Decision{Permission: "deny", Reason: err.Error(), Remediation: "Use the exact fork token from this subagent's initial Hamster instructions."}, nil
-		}
-		child, err = runner.ResumeForkChild(ctx, child.ID)
-		if err != nil {
-			return hook.Decision{}, err
-		}
-		return hook.Decision{Permission: "allow", Tracked: true, RunID: child.ID, Context: fmt.Sprintf("Hamster attached this Codex subagent to exact forked run %s and resumed the child branch at state %s.", child.ID, child.StateID)}, nil
-	}
 	if command.Name == "exec" {
 		return hook.Decision{Permission: "deny", Reason: "language exec is runtime-owned", Remediation: "Declare exec SCRIPT inside the active flow; for administrative recovery, run hamster exec with an explicit --session outside Codex."}, nil
 	}

@@ -154,7 +154,7 @@ func TestKillControlCommandEscapesActiveRun(t *testing.T) {
 	}
 }
 
-func TestForkLifecycleInjectsTokenQuarantinesAndAttachesExactly(t *testing.T) {
+func TestForkLifecycleAutomaticallyBindsStableChildIdentity(t *testing.T) {
 	state, err := store.Open(filepath.Join(t.TempDir(), "hamster.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -179,8 +179,7 @@ func TestForkLifecycleInjectsTokenQuarantinesAndAttachesExactly(t *testing.T) {
 	if err := json.Unmarshal(response.Result, &spawnDecision); err != nil {
 		t.Fatal(err)
 	}
-	token := forkToken(spawn.RequestID())
-	if !spawnDecision.Tracked || !strings.Contains(string(spawnDecision.UpdatedInput), "hamster attach "+token) {
+	if !spawnDecision.Tracked || len(spawnDecision.UpdatedInput) != 0 {
 		t.Fatalf("spawn decision = %#v", spawnDecision)
 	}
 
@@ -190,25 +189,6 @@ func TestForkLifecycleInjectsTokenQuarantinesAndAttachesExactly(t *testing.T) {
 	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "start-hook", Method: "hook.event", Params: params})
 	if response.Error != nil {
 		t.Fatalf("subagent start error = %#v", response.Error)
-	}
-	if _, err := state.FindCurrentRun(context.Background(), "session-fork", "agent-child"); err != sql.ErrNoRows {
-		t.Fatalf("SubagentStart guessed a fork binding: %v", err)
-	}
-
-	blocked := hook.Event{SessionID: "session-fork", AgentID: "agent-child", EventName: "PreToolUse", ToolName: "Bash", ToolUseID: "before-attach", ToolInput: json.RawMessage(`{"command":"git status"}`)}
-	params, _ = json.Marshal(hook.HookRequest{Event: blocked})
-	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "blocked-hook", Method: "hook.event", Params: params})
-	var blockedDecision hook.Decision
-	if response.Error != nil || json.Unmarshal(response.Result, &blockedDecision) != nil || blockedDecision.Permission != "deny" || !strings.Contains(blockedDecision.Remediation, "hamster attach") {
-		t.Fatalf("quarantine decision = %#v, error = %#v", blockedDecision, response.Error)
-	}
-
-	attachInput, _ := json.Marshal(map[string]string{"command": "hamster attach " + token})
-	attach := hook.Event{SessionID: "session-fork", AgentID: "agent-child", EventName: "PreToolUse", ToolName: "Bash", ToolUseID: "attach", ToolInput: attachInput}
-	params, _ = json.Marshal(hook.HookRequest{Event: attach})
-	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "attach-hook", Method: "hook.event", Params: params})
-	if response.Error != nil {
-		t.Fatalf("attach hook error = %#v", response.Error)
 	}
 	child, err := state.FindCurrentRun(context.Background(), "session-fork", "agent-child")
 	if err != nil {
@@ -291,10 +271,9 @@ func TestLanguageForkPostStoresParentHandleAndEntersRuntimeWait(t *testing.T) {
 	if current.Status != "waiting" || handle["child"] != false || handle["parent"] != true || handle["run_id"] == "" {
 		t.Fatalf("parent after fork = %#v, variables=%#v", current, variables)
 	}
-	attach := hook.Event{SessionID: "language-fork", AgentID: "agent-child", EventName: "PreToolUse", ToolName: "Bash", ToolUseID: "attach", WorkspaceRoot: workspace}
-	attach.ToolInput, _ = json.Marshal(map[string]string{"command": "hamster attach " + forkToken(spawn.RequestID())})
-	params, _ = json.Marshal(hook.HookRequest{Event: attach})
-	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "fork-attach", Method: "hook.event", Params: params})
+	started := hook.Event{SessionID: "language-fork", AgentID: "agent-child", EventName: "SubagentStart", WorkspaceRoot: workspace}
+	params, _ = json.Marshal(hook.HookRequest{Event: started})
+	response = server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "fork-start", Method: "hook.event", Params: params})
 	if response.Error != nil {
 		t.Fatal(response.Error)
 	}

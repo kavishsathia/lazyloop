@@ -48,6 +48,12 @@ func (e *Engine) authorize(run *store.Run, event Event) Decision {
 	if run.Status == "complete" {
 		return Decision{Permission: "allow"}
 	}
+	if run.Status == "waiting" {
+		if isWaitTool(event.ToolName) {
+			return Decision{Permission: "allow"}
+		}
+		return deny(fmt.Sprintf("Hamster run %s is waiting for its child runs.", run.ID), "Use Codex's native wait_agent operation; Hamster will advance when every declared child is terminal.")
+	}
 	if run.Status != "running" {
 		return deny(fmt.Sprintf("Hamster run %s terminated with status %s.", run.ID, run.Status), "Inspect the run result and start or resume an appropriate loop.")
 	}
@@ -84,6 +90,10 @@ func (e *Engine) authorize(run *store.Run, event Event) Decision {
 
 func isSpawnTool(name string) bool {
 	return strings.EqualFold(name, "collaborationspawn_agent") || strings.EqualFold(name, "spawn_agent") || strings.EqualFold(name, "Agent")
+}
+
+func isWaitTool(name string) bool {
+	return strings.EqualFold(name, "collaborationwait_agent") || strings.EqualFold(name, "wait_agent")
 }
 
 func expectedTool(expression *ir.Expression) (tool, detail string, ok bool) {

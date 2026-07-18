@@ -45,7 +45,7 @@ func TestForkClonesCompleteRunStateAndBindsChild(t *testing.T) {
 	}
 }
 
-func TestPendingForkTokensAttachOutOfOrderWithoutCrossBinding(t *testing.T) {
+func TestPendingForksBindStableChildIdentitiesInStartOrder(t *testing.T) {
 	state := testStore(t)
 	parent, err := state.CreateRun(context.Background(), CreateRunParams{
 		WorkspaceRoot: "/repo", CodexSessionID: "session-token", Machine: testMachine(),
@@ -62,23 +62,20 @@ func TestPendingForkTokensAttachOutOfOrderWithoutCrossBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	claimedSecond, err := state.ClaimFork(context.Background(), "session-token", "agent-second", "token-second")
+	claimedFirst, err := state.ClaimPendingFork(context.Background(), "session-token", "agent-first")
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimedFirst, err := state.ClaimFork(context.Background(), "session-token", "agent-first", "token-first")
+	replayed, err := state.ClaimPendingFork(context.Background(), "session-token", "agent-first")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimedSecond.ID != second.ID || claimedFirst.ID != first.ID {
-		t.Fatalf("tokens crossed: first=%s/%s second=%s/%s", first.ID, claimedFirst.ID, second.ID, claimedSecond.ID)
+	if claimedFirst.ID != first.ID || replayed.ID != first.ID {
+		t.Fatalf("first binding = %s/%s replay=%s", first.ID, claimedFirst.ID, replayed.ID)
 	}
-	if _, err := state.ClaimFork(context.Background(), "session-token", "agent-first", "token-second"); err == nil {
-		t.Fatal("agent rebound to a different token")
-	}
-	replayed, err := state.ClaimFork(context.Background(), "session-token", "agent-second", "token-second")
-	if err != nil || replayed.ID != second.ID {
-		t.Fatalf("idempotent claim = %#v, %v", replayed, err)
+	claimedSecond, err := state.ClaimPendingFork(context.Background(), "session-token", "agent-second")
+	if err != nil || claimedSecond.ID != second.ID {
+		t.Fatalf("second binding = %#v, %v", claimedSecond, err)
 	}
 	pending, err := state.HasPendingFork(context.Background(), "session-token")
 	if err != nil || pending {

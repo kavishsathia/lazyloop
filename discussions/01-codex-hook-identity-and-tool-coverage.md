@@ -292,14 +292,18 @@ If two different parent agents spawn children concurrently, their pending
 forks may overlap. A stress test is required to determine whether Codex
 serializes these lifecycle events sufficiently for unambiguous matching.
 
-If ordering is not sufficient, Hamster will need a fork-token handshake:
+If ordering is not sufficient, an earlier design considered a fork-token handshake:
 
 1. Create a unique pending fork token for the parent run.
 2. Include that token in the child's initial instructions.
 3. Require the child to attach using the token before other work.
 4. Bind the observed child `agent_id` to the corresponding forked run.
 
-This handshake remains agent-driven and requires no human intervention.
+Live testing later rejected this fallback: Codex encrypts the spawn message
+before the hook observes it, so rewriting that field cannot provide a reliable
+plaintext handshake. Hamster instead binds the stable `(session_id, agent_id)`
+from the first child hook to the pending fork and uses those same keys on every
+later hook. No agent-driven attachment command is part of the process model.
 
 ## Conclusion
 
@@ -314,6 +318,8 @@ CLI:
 - Native web search is observable as `webrun` on this version.
 - A state-machine fork can be created automatically when a subagent starts.
 
-The next focused experiment should stress simultaneous nested spawns and settle
-whether pending forks can be associated by event ordering or require explicit
-fork tokens.
+The next focused experiment should stress simultaneous nested spawns and
+confirm the observed pending-fork ordering under contention. Explicit fork
+tokens are not viable because the hook observes an encrypted spawn message;
+the implemented identity model remains `(session_id, agent_id)` on every child
+hook.

@@ -18,8 +18,8 @@ This distinction is deliberate. Hamster never treats the agent's claim that test
 ## Process control
 
 `step child = fork;` snapshots the complete process. The parent receives a
-handle with `parent == true`; after token attachment, the child receives the
-same handle with `child == true`. Hamster evaluates child/parent branches,
+handle with `parent == true`; automatic hook-identity binding gives the child
+the same handle with `child == true`. Hamster evaluates child/parent branches,
 automatically executes `exec script;` by replacing the complete child machine,
 and implements `wait child;` durably. Codex never issues exec or wait commands
 for language-level process control.

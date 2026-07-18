@@ -91,6 +91,34 @@ func TestForkStepAllowsOnlyCodexSpawn(t *testing.T) {
 	}
 }
 
+func TestWaitingRunAllowsOnlyNativeCodexWait(t *testing.T) {
+	engine, session := setupRun(t, `goal {
+  verify done = true;
+} with flow {
+  step child = fork;
+  if child.child { exec child-work; }
+  wait child;
+}`)
+	run, err := engine.store.FindCurrentRun(context.Background(), session, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := run.StateID
+	run.Status = "waiting"
+	if err := engine.store.UpdateRun(context.Background(), expected, run); err != nil {
+		t.Fatal(err)
+	}
+	wait := Event{SessionID: session, EventName: "PreToolUse", ToolName: "collaborationwait_agent", ToolUseID: "wait", ToolInput: json.RawMessage(`{"timeout_ms":30000}`)}
+	allowed, err := engine.Decide(context.Background(), wait)
+	if err != nil || allowed.Permission != "allow" || !allowed.Tracked {
+		t.Fatalf("wait decision = %#v, error = %v", allowed, err)
+	}
+	denied, err := engine.Decide(context.Background(), toolEvent(session, "Bash", "true"))
+	if err != nil || denied.Permission != "deny" || !strings.Contains(denied.Remediation, "wait_agent") {
+		t.Fatalf("non-wait decision = %#v, error = %v", denied, err)
+	}
+}
+
 func TestGoalPoliciesClassifyBashCapabilities(t *testing.T) {
 	engine, session := setupRun(t, `goal {
   allow git;
