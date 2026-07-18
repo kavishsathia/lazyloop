@@ -10,13 +10,17 @@ Hamster is brace-delimited and semicolon-terminated, so the same source works in
 ## Loop declarations
 
 ```text
-loop    = goal | flow | foreach ;
-goal    = "goal" [ identifier ] "{" { goal-statement } "}" ;
-flow    = "flow" [ identifier ] "{" { flow-statement } "}" ;
-foreach = "foreach" [ identifier ] identifier "in" expression "{" loop "}" ;
+program = loop ;
+loop    = goal | foreach ;
+goal    = "goal" "{" { goal-statement } "}" [ "with" flow ] ;
+flow    = "flow" "{" step { step } "}" ;
+foreach = "foreach" identifier "in" expression "{" loop "}" ;
 ```
 
-Only a `flow` may contain `step`. A step value may be an expression or an inline `goal`, `flow`, or `foreach`, which is how workflows nest without a separate call construct.
+Loops are anonymous. A `flow` is not an independent loop: it attaches to the
+preceding goal with `with flow` and contains one or more steps. A step value may
+be an expression or an inline `goal` or `foreach`, which is how workflows nest
+without a separate call construct.
 
 ## Statements
 
@@ -30,6 +34,11 @@ return expression;
 ```
 
 Limits are prospective: accounting starts only when execution reaches the clause. A `return` supplies the normal completion value; it does not bypass verification.
+
+Verifiers run in source order and stop at the first failure. A declarative goal
+probes after every hook-visible tool call. A goal with an attached flow probes
+only after the complete flow cycle, then either completes or starts the next
+cycle at its first step.
 
 ## Expressions
 

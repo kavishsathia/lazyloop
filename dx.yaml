@@ -158,8 +158,9 @@ journey:
       - "Hamster observes supported tool calls through Codex hooks"
       - "A subagent receives a fork of the parent's complete machine and stack with a new run binding"
       - "Hamster records transitions and evidence in the central WAL database"
-      - "Hamster runs verify steps independently from the agent's claims"
-      - "The flow repeats until every verification passes or a limit terminates it"
+      - "For a declarative goal, Hamster runs ordered verify steps after every hook-visible tool call and stops at the first failure"
+      - "For a goal with an attached flow, Hamster verifies only after the complete ordered flow cycle"
+      - "The goal repeats until every verification passes automatically or a limit terminates it"
     human_experience: "The person watches progress but does not repeatedly remind Codex to test, retry, or inspect status"
     product_status: "core loops, hooks, persistence, limits, verification, automatic subagent fork, exec, and direct-child wait exist"
 
@@ -185,7 +186,7 @@ journey:
     actor: "human"
     surface: "Codex conversation and local application or browser"
     hamster_completion_requires:
-      - "All flow or goal verifications pass"
+      - "All goal verifications pass"
       - "The run reaches a terminal state"
       - "Verification evidence is persisted"
     codex_summary:

@@ -4,17 +4,19 @@ import "testing"
 
 func TestParseNestedLoopsAndExpressions(t *testing.T) {
 	source := `
-flow build_all {
+goal {
   limit attempts 3;
-  step deployments = foreach service in services {
-    flow {
-      step image = docker.build(service.path);
-      verify healthy = docker.healthy(image) == true;
-      return image;
-    }
-  };
   verify complete = deployments.count == services.count;
   return deployments;
+} with flow {
+  step deployments = foreach service in services {
+    goal {
+      verify healthy = docker.healthy(image) == true;
+      return image;
+    } with flow {
+      step image = docker.build(service.path);
+    }
+  };
 }`
 
 	program, diagnostics := Parse(source)
@@ -24,14 +26,14 @@ flow build_all {
 	if len(program.Loops) != 1 {
 		t.Fatalf("Parse() loops = %d, want 1", len(program.Loops))
 	}
-	flow, ok := program.Loops[0].(*Flow)
+	goal, ok := program.Loops[0].(*Goal)
 	if !ok {
-		t.Fatalf("Parse() loop type = %T, want *Flow", program.Loops[0])
+		t.Fatalf("Parse() loop type = %T, want *Goal", program.Loops[0])
 	}
-	if flow.Name != "build_all" || len(flow.Statements) != 4 {
-		t.Fatalf("flow = %#v", flow)
+	if goal.Flow == nil || len(goal.Statements) != 3 || len(goal.Flow.Statements) != 1 {
+		t.Fatalf("goal = %#v", goal)
 	}
-	step := flow.Statements[1].(*Step)
+	step := goal.Flow.Statements[0].(*Step)
 	loopValue, ok := step.Value.(*LoopValue)
 	if !ok {
 		t.Fatalf("step value type = %T, want *LoopValue", step.Value)
@@ -43,7 +45,7 @@ flow build_all {
 }
 
 func TestParseGoalPoliciesAndNamedArguments(t *testing.T) {
-	source := `goal fix {
+	source := `goal {
   allow git;
   disallow docker;
   limit time 30m;
@@ -60,8 +62,20 @@ func TestParseGoalPoliciesAndNamedArguments(t *testing.T) {
 	}
 }
 
+func TestRejectNamesAndStandaloneFlow(t *testing.T) {
+	for _, source := range []string{
+		`goal named { verify okay = true; }`,
+		`flow { step work = bash.run("true"); }`,
+	} {
+		_, diagnostics := Parse(source)
+		if len(diagnostics) == 0 {
+			t.Fatalf("Parse(%q) unexpectedly succeeded", source)
+		}
+	}
+}
+
 func TestRejectStepInsideGoal(t *testing.T) {
-	_, diagnostics := Parse(`goal bad { step nope = bash.run("false"); }`)
+	_, diagnostics := Parse(`goal { step nope = bash.run("false"); }`)
 	if len(diagnostics) == 0 || diagnostics[0].Message != "step is only valid inside flow" {
 		t.Fatalf("diagnostics = %v", diagnostics)
 	}

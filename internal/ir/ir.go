@@ -25,6 +25,7 @@ type Machine struct {
 	States       []State       `json:"states"`
 	Return       *Expression   `json:"return,omitempty"`
 	Foreach      *Foreach      `json:"foreach,omitempty"`
+	Imperative   bool          `json:"imperative,omitempty"`
 	Span         language.Span `json:"span"`
 }
 

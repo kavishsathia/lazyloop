@@ -125,11 +125,11 @@ func handleExecCommand(ctx context.Context, state *store.Store, runner *hamsterr
 	if err != nil {
 		return hook.Decision{}, err
 	}
-	source, entry, err := resolveSource(arguments, event.WorkspaceRoot)
+	source, err := resolveSource(arguments, event.WorkspaceRoot)
 	if err != nil {
 		return hook.Decision{Permission: "deny", Reason: err.Error(), Remediation: "Correct the Hamster exec command and try again."}, nil
 	}
-	machine, err := compileMachine(source, entry)
+	machine, err := compileMachine(source)
 	if err != nil {
 		return hook.Decision{Permission: "deny", Reason: err.Error(), Remediation: "Fix the replacement Hamster script diagnostics and exec it again."}, nil
 	}
@@ -266,19 +266,19 @@ func machineLabel(machine ir.Machine) string {
 	return "anonymous " + string(machine.Kind)
 }
 
-func CompileFile(path, entry string) (ir.Machine, error) {
+func CompileFile(path string) (ir.Machine, error) {
 	source, err := os.ReadFile(path)
 	if err != nil {
 		return ir.Machine{}, err
 	}
-	return compileMachine(string(source), entry)
+	return compileMachine(string(source))
 }
 
-func CompileSource(source, entry string) (ir.Machine, error) {
-	return compileMachine(source, entry)
+func CompileSource(source string) (ir.Machine, error) {
+	return compileMachine(source)
 }
 
-func compileMachine(source, entry string) (ir.Machine, error) {
+func compileMachine(source string) (ir.Machine, error) {
 	program, parseDiagnostics := language.Parse(source)
 	if len(parseDiagnostics) > 0 {
 		return ir.Machine{}, parseDiagnostics
@@ -287,27 +287,19 @@ func compileMachine(source, entry string) (ir.Machine, error) {
 	if len(compileDiagnostics) > 0 {
 		return ir.Machine{}, compileDiagnostics
 	}
-	if entry != "" {
-		for _, machine := range compiled.Machines {
-			if machine.Name == entry {
-				return machine, nil
-			}
-		}
-		return ir.Machine{}, fmt.Errorf("loop %q is not defined", entry)
-	}
 	if len(compiled.Machines) != 1 {
-		return ir.Machine{}, fmt.Errorf("script defines %d loops; select one with --entry", len(compiled.Machines))
+		return ir.Machine{}, fmt.Errorf("script defines %d root loops; exactly one is required", len(compiled.Machines))
 	}
 	return compiled.Machines[0], nil
 }
 
-func resolveSource(arguments []string, cwd string) (source, entry string, err error) {
+func resolveSource(arguments []string, cwd string) (source string, err error) {
 	parsed, err := ParseRunArguments(arguments)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	source, err = resolveRunSource(parsed, cwd)
-	return source, parsed.Entry, err
+	return source, err
 }
 
 func resolveRunSource(arguments RunArguments, cwd string) (string, error) {

@@ -1,6 +1,10 @@
-flow build_provider {
+goal {
   limit time 2h;
   limit attempts 10;
+
+  verify complete = bash.check("go test ./...");
+  return implementation;
+} with flow {
 
   step implementation = goal {
     allow bash;
@@ -12,6 +16,4 @@ flow build_provider {
     return builds;
   };
 
-  verify complete = bash.check("go test ./...");
-  return implementation;
 }

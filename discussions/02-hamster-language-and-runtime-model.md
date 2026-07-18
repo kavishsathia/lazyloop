@@ -1,5 +1,9 @@
 # Hamster Language and Runtime Model
 
+> Historical design record. The current syntax uses anonymous `goal {}` loops
+> with an optional sibling `with flow {}` attachment; the canonical grammar is
+> in `docs/language/grammar.ebnf`.
+
 Date: 17 July 2026
 
 ## Thesis

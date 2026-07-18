@@ -13,21 +13,25 @@ facts rather than agent assertions.
 
 ## Current language model
 
-Hamster has three loop forms:
+Hamster has two loop forms and one imperative attachment:
 
 - `goal` is declarative. Codex chooses its actions until every verification
   succeeds or a limit terminates the loop.
-- `flow` is imperative. Codex performs ordered `step` declarations and the
-  flow repeats until every verification succeeds or a limit terminates it.
-- `foreach` applies one `goal` or `flow` to every value in a stable input
+- `with flow` attaches an imperative scheduler to a goal. Codex performs its
+  ordered `step` declarations once per cycle; only a complete cycle triggers
+  the goal's verifier ladder.
+- `foreach` applies one `goal` or nested `foreach` to every value in a stable input
   sequence. Each element must complete independently. The inner loop's return
-  value becomes that element's result.
+  value becomes that element's result. An inner goal may have an attached flow.
 
-Only a `flow` contains `step` declarations. A step may invoke a primitive or a
-nested `goal`, `flow`, or `foreach` loop.
+Only an attached `flow` contains `step` declarations. A step may invoke a
+primitive or a nested `goal` or `foreach` loop.
 
 `verify` is executed by Hamster, not Codex. `return` declares the value emitted
 after all required verifications succeed; it does not bypass verification.
+Verifiers run in source order and stop at the first failure. Declarative goals
+probe after every hook-visible tool call; goals with flows probe after each
+complete flow cycle. Passing every verifier completes the goal automatically.
 
 Limits are prospective: a limit begins accounting when execution first
 crosses its declaration. Earlier work is not charged to it.
@@ -70,7 +74,7 @@ crosses its declaration. Earlier work is not charged to it.
 
 ### H5: Loop runtime
 
-- Execute and resume goal and flow machines.
+- Execute and resume goals with declarative or attached-flow scheduling.
 - Run independent verifiers.
 - Track prospective time and attempt limits.
 - Persist evidence, transitions, results, and terminal status.

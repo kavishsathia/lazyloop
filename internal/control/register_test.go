@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"hamster/internal/hook"
-	"hamster/internal/ir"
 	hamsterruntime "hamster/internal/runtime"
 	"hamster/internal/store"
 )
@@ -19,18 +18,14 @@ func TestHookRegistrationUsesSharedRunArguments(t *testing.T) {
 	root := t.TempDir()
 	script := filepath.Join(root, "workflow.hmstr")
 	source := `
-goal other {
-  verify yes = true;
-  return true;
-}
-
-flow build {
+goal {
+  verify complete = true;
+  return work;
+} with flow {
   step work = goal {
     verify yes = true;
     return "done";
   };
-  verify complete = true;
-  return work;
 }
 `
 	if err := os.WriteFile(script, []byte(source), 0o600); err != nil {
@@ -44,7 +39,7 @@ flow build {
 
 	event := hook.Event{SessionID: "codex-session", AgentID: "ROOT", WorkspaceRoot: root}
 	decision, err := RegisterFromHook(ctx, state, hamsterruntime.New(state), event, Command{
-		Name: "run", Args: []string{script, "--entry", "build"},
+		Name: "run", Args: []string{script},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -56,11 +51,11 @@ flow build {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(run.Stack) != 1 || run.Stack[0].Machine.Name != "build" || run.Stack[0].Machine.Kind != ir.LoopFlow {
+	if len(run.Stack) != 1 || !run.Stack[0].Machine.Imperative {
 		t.Fatalf("current machine = %q %q, stack = %#v", run.Machine.Name, run.Machine.Kind, run.Stack)
 	}
 	replayed, err := RegisterFromHook(ctx, state, hamsterruntime.New(state), event, Command{
-		Name: "run", Args: []string{script, "--entry", "build"},
+		Name: "run", Args: []string{script},
 	})
 	if err != nil || replayed.RunID != decision.RunID || replayed.Context != decision.Context {
 		t.Fatalf("replayed registration = %#v, %v", replayed, err)
@@ -102,7 +97,7 @@ func TestHookGoalAchievedSignalCompletesBoundGoal(t *testing.T) {
 	runner := hamsterruntime.New(state)
 	event := hook.Event{SessionID: "codex-session", AgentID: "ROOT", WorkspaceRoot: root, EventName: "PreToolUse", ToolName: "Bash", ToolUseID: "run"}
 	started, err := RegisterFromHook(ctx, state, runner, event, Command{
-		Name: "run", Args: []string{"--text", `goal work { verify done = true; return done; }`},
+		Name: "run", Args: []string{"--text", `goal { verify done = true; return done; }`},
 	})
 	if err != nil {
 		t.Fatal(err)

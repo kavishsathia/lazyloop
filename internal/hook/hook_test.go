@@ -56,10 +56,11 @@ func toolEvent(session, tool, command string) Event {
 }
 
 func TestFlowAllowsOnlyCurrentExactBashStep(t *testing.T) {
-	engine, session := setupRun(t, `flow test {
-  step tests = bash.run("go test ./...");
+	engine, session := setupRun(t, `goal {
   verify passed = bash.check("go test ./...");
   return passed;
+} with flow {
+  step tests = bash.run("go test ./...");
 }`)
 	allowed, err := engine.Decide(context.Background(), toolEvent(session, "Bash", "go test ./..."))
 	if err != nil || allowed.Permission != "allow" || !allowed.Tracked {
@@ -72,7 +73,7 @@ func TestFlowAllowsOnlyCurrentExactBashStep(t *testing.T) {
 }
 
 func TestGoalPoliciesClassifyBashCapabilities(t *testing.T) {
-	engine, session := setupRun(t, `goal fix {
+	engine, session := setupRun(t, `goal {
   allow git;
   disallow docker;
   verify clean = bash.check("true");
@@ -89,7 +90,7 @@ func TestGoalPoliciesClassifyBashCapabilities(t *testing.T) {
 }
 
 func TestGoalCodexPolicyAllowsSubagentSpawn(t *testing.T) {
-	engine, session := setupRun(t, `goal parallel {
+	engine, session := setupRun(t, `goal {
   allow codex;
   verify done = true;
 }`)
@@ -101,7 +102,7 @@ func TestGoalCodexPolicyAllowsSubagentSpawn(t *testing.T) {
 }
 
 func TestUnboundSessionPassesThrough(t *testing.T) {
-	engine, _ := setupRun(t, `goal okay { verify yes = true; return yes; }`)
+	engine, _ := setupRun(t, `goal { verify yes = true; return yes; }`)
 	decision, err := engine.Decide(context.Background(), toolEvent("other-session", "Bash", "anything"))
 	if err != nil || decision.Permission != "allow" || decision.Tracked {
 		t.Fatalf("decision = %#v, error = %v", decision, err)

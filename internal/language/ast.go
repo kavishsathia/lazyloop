@@ -11,40 +11,31 @@ type Node interface {
 type Loop interface {
 	Node
 	loopNode()
-	LoopName() string
 }
 
 type Goal struct {
 	Span       Span        `json:"span"`
-	Name       string      `json:"name,omitempty"`
 	Statements []Statement `json:"statements"`
+	Flow       *Flow       `json:"flow,omitempty"`
 }
 
-func (g *Goal) NodeSpan() Span   { return g.Span }
-func (g *Goal) loopNode()        {}
-func (g *Goal) LoopName() string { return g.Name }
+func (g *Goal) NodeSpan() Span { return g.Span }
+func (g *Goal) loopNode()      {}
 
 type Flow struct {
 	Span       Span        `json:"span"`
-	Name       string      `json:"name,omitempty"`
 	Statements []Statement `json:"statements"`
 }
 
-func (f *Flow) NodeSpan() Span   { return f.Span }
-func (f *Flow) loopNode()        {}
-func (f *Flow) LoopName() string { return f.Name }
-
 type Foreach struct {
 	Span     Span   `json:"span"`
-	Name     string `json:"name,omitempty"`
 	Binding  string `json:"binding"`
 	Sequence Expr   `json:"sequence"`
 	Body     Loop   `json:"body"`
 }
 
-func (f *Foreach) NodeSpan() Span   { return f.Span }
-func (f *Foreach) loopNode()        {}
-func (f *Foreach) LoopName() string { return f.Name }
+func (f *Foreach) NodeSpan() Span { return f.Span }
+func (f *Foreach) loopNode()      {}
 
 type Statement interface {
 	Node

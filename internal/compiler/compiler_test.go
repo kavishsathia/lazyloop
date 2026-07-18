@@ -23,13 +23,14 @@ func compileSource(t *testing.T, source string) *ir.Program {
 }
 
 func TestCompileFlowTransitions(t *testing.T) {
-	program := compileSource(t, `flow test {
-  step ran = bash.run("go test ./...");
+	program := compileSource(t, `goal {
   verify passed = bash.check("go test ./...");
   return passed;
+} with flow {
+  step ran = bash.run("go test ./...");
 }`)
 	machine := program.Machines[0]
-	if machine.Kind != ir.LoopFlow || len(machine.States) != 4 {
+	if machine.Kind != ir.LoopGoal || !machine.Imperative || len(machine.States) != 4 {
 		t.Fatalf("machine = %#v", machine)
 	}
 	if machine.States[0].Executor != ir.ExecutorAgent || machine.States[1].Executor != ir.ExecutorRuntime {
@@ -42,7 +43,7 @@ func TestCompileFlowTransitions(t *testing.T) {
 }
 
 func TestCompileGoalStartsWithAgentWork(t *testing.T) {
-	program := compileSource(t, `goal fix {
+	program := compileSource(t, `goal {
   allow git;
   verify clean = git.clean();
   return git.current_commit();
@@ -76,7 +77,7 @@ func TestCompileForeachCarriesInnerReturn(t *testing.T) {
 }
 
 func TestRequireVerificationAndUniqueReturn(t *testing.T) {
-	program, parseDiagnostics := language.Parse(`flow invalid {
+	program, parseDiagnostics := language.Parse(`goal {
   return true;
   return false;
 }`)

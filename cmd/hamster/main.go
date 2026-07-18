@@ -89,7 +89,7 @@ func signalCommand(arguments []string) error {
 	if len(arguments) != 1 || arguments[0] != "goal-achieved" {
 		return errors.New("usage: hamster signal goal-achieved")
 	}
-	fmt.Println("Hamster completion signal handled by the Codex hook.")
+	fmt.Println("Hamster verification probe handled by the Codex hook.")
 	return nil
 }
 
@@ -569,7 +569,6 @@ func execCommand(ctx context.Context, arguments []string) error {
 	session := flags.String("session", "", "Codex session ID for an explicit exec")
 	agent := flags.String("agent", "", "Codex agent ID")
 	homeFlag := flags.String("home", "", "user home directory")
-	entry := flags.String("entry", "", "named loop to execute")
 	text := flags.String("text", "", "ephemeral replacement loop source")
 	if err := flags.Parse(arguments); err != nil {
 		return err
@@ -581,9 +580,9 @@ func execCommand(ctx context.Context, arguments []string) error {
 	var machine any
 	var err error
 	if *text != "" {
-		machine, err = control.CompileSource(*text, *entry)
+		machine, err = control.CompileSource(*text)
 	} else if flags.NArg() == 1 {
-		machine, err = control.CompileFile(flags.Arg(0), *entry)
+		machine, err = control.CompileFile(flags.Arg(0))
 	} else {
 		return errors.New("exec requires a script or --text")
 	}
@@ -675,14 +674,13 @@ func killCommand(ctx context.Context, arguments []string) error {
 
 func inspectCommand(arguments []string) error {
 	flags := flag.NewFlagSet("inspect", flag.ContinueOnError)
-	entry := flags.String("entry", "", "named loop")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
-		return errors.New("usage: hamster inspect [--entry NAME] SCRIPT")
+		return errors.New("usage: hamster inspect SCRIPT")
 	}
-	machine, err := control.CompileFile(flags.Arg(0), *entry)
+	machine, err := control.CompileFile(flags.Arg(0))
 	if err != nil {
 		return err
 	}

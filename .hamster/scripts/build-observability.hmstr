@@ -1,6 +1,11 @@
-flow build_observability {
+goal {
   limit time 6h;
   limit attempts 16;
+
+  verify correct_branch = bash.check("test \"$(git branch --show-current)\" = hamster/observability");
+  verify complete = bash.check("go test ./... && go vet ./...");
+  return implementation;
+} with flow {
 
   step branch = bash.run("git switch hamster/observability 2>/dev/null || git switch -c hamster/observability");
 
@@ -33,7 +38,4 @@ flow build_observability {
     return observability_contracts && embedded_ui && tests_pass && vet_passes && committed;
   };
 
-  verify correct_branch = bash.check("test \"$(git branch --show-current)\" = hamster/observability");
-  verify complete = bash.check("go test ./... && go vet ./...");
-  return implementation;
 }

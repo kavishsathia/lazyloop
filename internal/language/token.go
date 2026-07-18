@@ -37,6 +37,7 @@ const (
 	TokenAllow      TokenKind = "allow"
 	TokenDisallow   TokenKind = "disallow"
 	TokenIn         TokenKind = "in"
+	TokenWith       TokenKind = "with"
 	TokenTrue       TokenKind = "true"
 	TokenFalse      TokenKind = "false"
 	TokenLBrace     TokenKind = "{"
@@ -78,6 +79,7 @@ var keywords = map[string]TokenKind{
 	"allow":    TokenAllow,
 	"disallow": TokenDisallow,
 	"in":       TokenIn,
+	"with":     TokenWith,
 	"true":     TokenTrue,
 	"false":    TokenFalse,
 }

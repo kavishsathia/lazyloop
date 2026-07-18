@@ -1,6 +1,11 @@
-flow build_process_kernel {
+goal {
   limit time 4h;
   limit attempts 12;
+
+  verify correct_branch = bash.check("test \"$(git branch --show-current)\" = hamster/process-kernel");
+  verify complete = bash.check("go test ./... && go vet ./...");
+  return implementation;
+} with flow {
 
   step branch = bash.run("git switch hamster/process-kernel 2>/dev/null || git switch -c hamster/process-kernel");
 
@@ -32,7 +37,4 @@ flow build_process_kernel {
     return process_contracts && tests_pass && vet_passes && committed;
   };
 
-  verify correct_branch = bash.check("test \"$(git branch --show-current)\" = hamster/process-kernel");
-  verify complete = bash.check("go test ./... && go vet ./...");
-  return implementation;
 }

@@ -1,6 +1,11 @@
-flow build_reference {
+goal {
   limit time "8h";
   limit attempts 24;
+
+  verify go_tests = bash.check("go test ./...");
+  verify go_vet = bash.check("go vet ./...");
+  return "reference system complete";
+} with flow {
 
   step catalog = goal {
     allow "apply_patch";
@@ -26,7 +31,4 @@ flow build_reference {
     return "documentation website ready";
   };
 
-  verify go_tests = bash.check("go test ./...");
-  verify go_vet = bash.check("go vet ./...");
-  return "reference system complete";
 }

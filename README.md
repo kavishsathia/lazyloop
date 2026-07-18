@@ -45,13 +45,15 @@ agent starts a repository loop with:
 ```sh
 hamster run build-provider
 hamster status
-hamster signal goal-achieved
 ```
 
-Declarative work advances only through the explicit completion signal. Ordinary
-tool calls leave the goal parked. Hamster then runs its independent verifiers;
-success completes the loop, while failure reports the named verifier and starts
-the next iteration with remediation for the agent.
+For a declarative `goal`, every hook-visible tool call triggers its ordered
+verifier ladder. Hamster stops at the first failed verifier and reports it to
+Codex; when every verifier passes, the goal completes automatically. Adding
+`with flow` changes the cadence: Hamster waits for the complete ordered flow
+cycle before probing the goal. `hamster signal goal-achieved` remains available
+as an optional immediate probe, but correctness does not depend on Codex
+remembering to call it.
 
 If a loop is preventing work needed to repair Hamster itself, use the
 high-priority emergency brake:

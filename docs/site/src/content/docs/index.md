@@ -33,15 +33,17 @@ Every page under **Reference** is generated from the same structured catalog emb
 | Parallelism | Process kernel | Forked state, bindings, wait, and return |
 
 ```text
-flow repair {
+goal {
   limit time "30m";
+  verify clean = bash.check("git diff --check");
+  verify tests = bash.check("go test ./...");
+  return fix;
+} with flow {
   step branch = bash.run("git switch -c repair");
   step fix = goal {
     limit attempts 8;
     verify tests = bash.check("go test ./...");
     return "fixed";
   };
-  verify clean = bash.check("git diff --check");
-  return fix;
 }
 ```

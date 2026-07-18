@@ -62,6 +62,7 @@ func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decisio
 		return hook.Decision{}, err
 	}
 	expectedState := run.StateID
+	observationOffset := r.observationCount(run.ID)
 	environment, err := decodeEnvironment(run.Variables)
 	if err != nil {
 		return hook.Decision{}, err
@@ -78,8 +79,7 @@ func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decisio
 		environment[state.Name] = decodeToolResponse(event.ToolResponse)
 		run.StateID = state.Next
 	} else if state.Kind == ir.StateAgentWork {
-		decision := hook.Decision{Permission: "allow", Tracked: true, RunID: run.ID}
-		return decision, r.recordWithoutAdvance(ctx, event, run, decision)
+		run.StateID = state.Next
 	} else {
 		decision := hook.Decision{Permission: "allow", Tracked: true, RunID: run.ID}
 		return decision, r.recordWithoutAdvance(ctx, event, run, decision)
@@ -89,13 +89,17 @@ func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decisio
 		return hook.Decision{}, err
 	}
 	run.Variables, _ = json.Marshal(environment)
+	observations := r.observationsAfter(run.ID, observationOffset)
 	decision := hook.Decision{Permission: "allow", Tracked: true, RunID: run.ID}
+	if len(observations) > 0 || terminalStatus(run.Status) {
+		decision = signalDecision(run, observations)
+	}
 	payload := event.Raw
 	if len(payload) == 0 {
 		payload = hook.MarshalEvent(event)
 	}
 	_, err = r.store.ApplyEvent(ctx, event.RequestID(), event.EventName, payload,
-		store.EventDecision{Decision: "allow"}, expectedState, run)
+		store.EventDecision{Decision: decision.Permission, Context: decision.Context, RunID: run.ID}, expectedState, run)
 	if err != nil {
 		return decision, err
 	}
@@ -105,9 +109,8 @@ func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decisio
 	return decision, err
 }
 
-// SignalGoalAchieved is the only operation that advances declarative agent
-// work. Tool calls made while working are observations, not claims of
-// completion; the explicit signal moves into independent verification.
+// SignalGoalAchieved requests an immediate declarative probe. Normal goal
+// progress no longer depends on it because every PostToolUse probes as well.
 func (r *Runner) SignalGoalAchieved(ctx context.Context, event hook.Event) (hook.Decision, error) {
 	if existing, err := r.store.GetEventDecision(ctx, event.RequestID()); err == nil {
 		return decisionFromEvent(existing, existing.RunID), nil
@@ -212,10 +215,10 @@ func signalDecision(run *store.Run, observations []VerificationObservation) hook
 		failed = append(failed, detail)
 	}
 	if len(failed) > 0 {
-		decision.Context = fmt.Sprintf("Hamster rejected the completion claim for run %s. Failed verification: %s. Continue the declarative work at iteration %d, then run hamster signal goal-achieved again.", run.ID, strings.Join(failed, "; "), run.Iteration)
+		decision.Context = fmt.Sprintf("Hamster verification failed for run %s at %s. Iteration %d is ready for the next permitted action.", run.ID, strings.Join(failed, "; "), run.Iteration)
 		return decision
 	}
-	decision.Context = fmt.Sprintf("Hamster accepted the completion signal for run %s and advanced to %s.", run.ID, run.StateID)
+	decision.Context = fmt.Sprintf("Hamster verified the current goal in run %s and advanced to %s.", run.ID, run.StateID)
 	return decision
 }
 
@@ -281,13 +284,26 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 			value, err := r.evaluator(run).Evaluate(ctx, *state.Expression, environment)
 			if err != nil {
 				r.recordVerification(run.ID, VerificationObservation{Name: state.Name, Command: verificationCommand(state.Expression), Error: err.Error()})
-				environment[state.Name] = false
-				run.StateID = state.Next
+				if err := failVerification(run, environment, state, r.clock.Now()); err != nil {
+					return err
+				}
+				if terminalStatus(run.Status) {
+					return nil
+				}
 				continue
 			}
 			passed := truthy(value)
 			r.recordVerification(run.ID, VerificationObservation{Name: state.Name, Command: verificationCommand(state.Expression), Passed: passed})
 			environment[state.Name] = passed
+			if !passed {
+				if err := failVerification(run, environment, state, r.clock.Now()); err != nil {
+					return err
+				}
+				if terminalStatus(run.Status) {
+					return nil
+				}
+				continue
+			}
 			run.StateID = state.Next
 		case ir.StateNested:
 			parentVariables, _ := json.Marshal(environment)
@@ -409,6 +425,20 @@ func (r *Runner) loopResult(ctx context.Context, run *store.Run, environment Env
 		return nil, fmt.Errorf("evaluate return: %w", err)
 	}
 	return value, nil
+}
+
+func failVerification(run *store.Run, environment Environment, state ir.State, now time.Time) error {
+	run.Iteration++
+	clearVerifications(run.Machine, environment)
+	exceeded, err := enforceLimits(run, environment, now)
+	if err != nil || exceeded {
+		return err
+	}
+	run.StateID = state.OnFailure
+	if run.StateID == "" {
+		run.StateID = run.Machine.InitialState
+	}
+	return nil
 }
 
 func enforceLimits(run *store.Run, environment Environment, now time.Time) (bool, error) {

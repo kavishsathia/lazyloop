@@ -1,11 +1,10 @@
-program        = { loop } ;
-loop           = goal | flow | foreach ;
-goal           = "goal" [ identifier ] "{" { goal-statement } "}" ;
-flow           = "flow" [ identifier ] "{" { flow-statement } "}" ;
-foreach        = "foreach" [ identifier ] identifier "in" expression
+program        = loop ;
+loop           = goal | foreach ;
+goal           = "goal" "{" { goal-statement } "}" [ "with" flow ] ;
+flow           = "flow" "{" step { step } "}" ;
+foreach        = "foreach" identifier "in" expression
                  "{" loop "}" ;
 goal-statement = verify | limit | policy | return ;
-flow-statement = step | verify | limit | policy | return ;
 step           = "step" identifier "=" ( expression | loop ) ";" ;
 verify         = "verify" identifier "=" expression ";" ;
 limit          = "limit" identifier expression ";" ;

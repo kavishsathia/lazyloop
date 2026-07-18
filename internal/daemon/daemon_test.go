@@ -240,7 +240,7 @@ func TestExecAndWaitControlCommandsUseProcessKernel(t *testing.T) {
 	server := New(state)
 	execEvent := hook.Event{
 		SessionID: "session-exec-control", EventName: "PreToolUse", ToolName: "Bash", ToolUseID: "exec-tool", WorkspaceRoot: "/repo",
-		ToolInput: json.RawMessage(`{"command":"hamster exec --text 'flow replacement { step command = bash.run(\"true\"); verify passed = bash.check(\"true\"); return passed; }'"}`),
+		ToolInput: json.RawMessage(`{"command":"hamster exec --text 'goal { verify passed = bash.check(\"true\"); return passed; } with flow { step command = bash.run(\"true\"); }'"}`),
 	}
 	params, _ := json.Marshal(hook.HookRequest{Event: execEvent})
 	response := server.Handle(context.Background(), protocol.Request{Version: protocol.Version, RequestID: "exec-hook", Method: "hook.event", Params: params})
@@ -251,7 +251,7 @@ func TestExecAndWaitControlCommandsUseProcessKernel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if executed.ProcessID != execRun.ProcessID || executed.Machine.Name != "replacement" || executed.StateID != "state_0" {
+	if executed.ProcessID != execRun.ProcessID || !executed.Machine.Imperative || executed.StateID != "state_0" {
 		t.Fatalf("executed run = %#v", executed)
 	}
 

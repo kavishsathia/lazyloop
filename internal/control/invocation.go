@@ -13,7 +13,6 @@ import (
 type RunArguments struct {
 	Script  string
 	Text    string
-	Entry   string
 	Session string
 	Agent   string
 	Home    string
@@ -32,7 +31,7 @@ func ParseRunArguments(arguments []string) (RunArguments, error) {
 		if options && strings.HasPrefix(argument, "--") {
 			name, value, inline := strings.Cut(strings.TrimPrefix(argument, "--"), "=")
 			switch name {
-			case "text", "entry", "session", "agent", "home":
+			case "text", "session", "agent", "home":
 			default:
 				return RunArguments{}, fmt.Errorf("unknown run option --%s", name)
 			}
@@ -53,8 +52,6 @@ func ParseRunArguments(arguments []string) (RunArguments, error) {
 			switch name {
 			case "text":
 				result.Text = value
-			case "entry":
-				result.Entry = value
 			case "session":
 				result.Session = value
 			case "agent":
@@ -89,5 +86,5 @@ func ResolveRunMachine(arguments RunArguments, cwd string) (ir.Machine, error) {
 	if err != nil {
 		return ir.Machine{}, err
 	}
-	return compileMachine(source, arguments.Entry)
+	return compileMachine(source)
 }

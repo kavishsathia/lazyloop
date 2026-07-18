@@ -4,15 +4,16 @@ entries:
     title: Goal loop
     kind: loop
     aliases: [goal]
-    keywords: [goal]
+    keywords: [goal, with]
     since: 0.1.0
     stability: experimental
     summary: Repeats agent work until every verifier passes or an active limit terminates the run.
-    syntax: ['goal [name] { goal-statement* }']
+    syntax: ['goal { goal-statement* } [with flow { step* }]']
     semantics:
       - Policies and limits activate in source order before agent work begins.
-      - Agent tool calls do not claim completion; `hamster signal goal-achieved` explicitly enters verification.
-      - The runtime executes every verifier; failure returns control to the next iteration.
+      - A declarative goal probes its ordered verifier ladder after every hook-visible tool call.
+      - An attached flow changes the cadence to one probe after each complete flow cycle.
+      - Verification stops at the first failure; all verifiers passing completes the goal automatically.
     postconditions:
       - predicate: every verify is true
         description: Normal completion requires all declared verifiers to pass in one boundary evaluation.
@@ -27,7 +28,7 @@ entries:
         language: hamster
         test: parse
         source: |
-          goal tests_pass {
+          goal {
             limit attempts 8;
             verify tests = bash.check("go test ./...");
             return "green";
@@ -35,20 +36,21 @@ entries:
     related: [statement.verify, statement.limit, loop.flow]
 
   - id: loop.flow
-    title: Flow loop
-    kind: loop
+    title: Attached flow
+    kind: execution-policy
     aliases: [flow]
     keywords: [flow]
     since: 0.1.0
     stability: experimental
-    summary: Repeats an ordered sequence of agent-owned steps until the flow verifiers pass.
-    syntax: ['flow [name] { flow-statement* }']
+    summary: Constrains an enclosing goal to repeat an ordered sequence of agent-owned steps between verification probes.
+    syntax: ['goal { goal-statement* } with flow { step+ }']
     semantics:
-      - Steps execute in source order and may contain expressions or nested loops.
-      - A failed flow boundary restarts the flow subject to active limits.
+      - A flow cannot execute or terminate independently of its goal.
+      - Steps execute in source order; only the completed cycle triggers the goal verifier ladder.
+      - A failed goal probe begins the next cycle without opening unconstrained agent work.
     postconditions:
-      - predicate: every verify is true
-        description: The flow only completes normally after all flow-level verifiers pass.
+      - predicate: enclosing goal controls termination
+        description: The flow ends only when the enclosing goal's ordered verifiers all pass.
         guarantee: enforced
         evidence: persisted verifier results at the iteration boundary
     examples:
@@ -56,14 +58,15 @@ entries:
         language: hamster
         test: parse
         source: |
-          flow repair {
+          goal {
+            verify clean = bash.check("git diff --check");
+            return fix;
+          } with flow {
             step branch = bash.run("git switch -c repair");
             step fix = goal {
               verify tests = bash.check("go test ./...");
               return "fixed";
             };
-            verify clean = bash.check("git diff --check");
-            return fix;
           }
     related: [statement.step, loop.goal, loop.foreach]
 
@@ -74,8 +77,8 @@ entries:
     keywords: [foreach, in]
     since: 0.1.0
     stability: experimental
-    summary: Runs one goal, flow, or nested foreach to completion for every value in a sequence.
-    syntax: ['foreach [name] binding in sequence { loop }']
+    summary: Runs one goal or nested foreach to completion for every value in a sequence.
+    syntax: ['foreach binding in sequence { goal | foreach }']
     semantics:
       - Each element receives an independent execution of the inner loop.
       - The inner return value becomes the result for that element and result order follows input order.
@@ -109,7 +112,7 @@ entries:
     since: 0.1.0
     stability: experimental
     summary: Names one agent-owned operation in an ordered flow.
-    syntax: ['step name = expression;', 'step name = goal|flow|foreach { ... };']
+    syntax: ['step name = expression;', 'step name = goal|foreach { ... };']
     semantics:
       - Steps are legal only inside flow.
       - Nested loops are themselves steps and must complete before the next step begins.
@@ -123,10 +126,11 @@ entries:
         language: hamster
         test: parse
         source: |
-          flow one_step {
-            step status = bash.run("git status --short");
+          goal {
             verify clean = bash.check("git diff --check");
             return status;
+          } with flow {
+            step status = bash.run("git status --short");
           }
     related: [loop.flow, primitive.bash-run]
 
@@ -141,7 +145,9 @@ entries:
     syntax: ['verify name = expression;']
     semantics:
       - Verification is runtime-owned rather than agent-owned.
-      - False or errored verification prevents the completion transition.
+      - Verifiers run in source order and evaluation stops at the first false or errored result.
+      - A declarative goal probes after every hook-visible tool call; a goal with an attached flow probes after each complete flow cycle.
+      - Passing the full verifier ladder completes the goal automatically.
     postconditions:
       - predicate: verifier result and evidence are persisted
         description: Each evaluation is observable in runtime state and traces.
@@ -424,16 +430,17 @@ entries:
     related: [statement.return, process.wait]
 
   - id: process.signal
-    title: Signal goal completion
+    title: Probe goal completion
     kind: process
     aliases: [signal, goal-achieved]
     since: 0.1.0
     stability: experimental
-    summary: Declares that agent-owned goal work is ready for independent Hamster verification.
+    summary: Optionally requests an immediate independent verification probe.
     syntax: ['hamster signal goal-achieved']
     semantics:
-      - Ordinary tool calls never advance a declarative agent-work state.
-      - The Codex pre-tool hook owns the transition from agent work into verification.
+      - Declarative goals already probe automatically after every hook-visible tool call.
+      - Goals with attached flows probe automatically after each complete flow cycle.
+      - This command is an optional early probe and is not a liveness or correctness dependency.
       - Failed or errored verifiers return concrete remediation and begin the next iteration.
       - Replaying the same hook request is idempotent, including after the run completes and unbinds.
     preconditions:
@@ -448,7 +455,7 @@ entries:
     failures:
       - code: verification_failed
         when: One or more verifiers return false or cannot be evaluated.
-        remediation: Continue the reported iteration, address the named verifier, and signal again.
+        remediation: Continue the reported iteration; Hamster probes again at the cadence defined by the goal.
       - code: wrong_state
         when: The current machine is waiting for an imperative step rather than agent work.
         remediation: Complete the current step before signaling goal-achieved.
@@ -506,7 +513,7 @@ entries:
       - title: Create a branch
         language: hamster
         test: parse
-        source: 'flow { step branch = bash.run("git switch -c fix"); verify ok = true; return branch; }'
+        source: 'goal { verify ok = true; return branch; } with flow { step branch = bash.run("git switch -c fix"); }'
     related: [statement.step, primitive.bash-check]
 
   - id: primitive.bash-check

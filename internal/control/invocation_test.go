@@ -7,12 +7,11 @@ import (
 
 func TestParseRunArgumentsIsOrderIndependent(t *testing.T) {
 	want := RunArguments{
-		Script: "workflow.hmstr", Entry: "build", Session: "session", Agent: "agent", Home: "/tmp/hamster-home",
+		Script: "workflow.hmstr", Session: "session", Agent: "agent", Home: "/tmp/hamster-home",
 	}
 	for _, arguments := range [][]string{
-		{"--session", "session", "--agent", "agent", "--home", "/tmp/hamster-home", "--entry", "build", "workflow.hmstr"},
-		{"workflow.hmstr", "--entry", "build", "--home=/tmp/hamster-home", "--agent=agent", "--session=session"},
-		{"--entry=build", "workflow.hmstr", "--session", "session", "--home", "/tmp/hamster-home", "--agent", "agent"},
+		{"--session", "session", "--agent", "agent", "--home", "/tmp/hamster-home", "workflow.hmstr"},
+		{"workflow.hmstr", "--home=/tmp/hamster-home", "--agent=agent", "--session=session"},
 	} {
 		got, err := ParseRunArguments(arguments)
 		if err != nil {
@@ -31,7 +30,7 @@ func TestParseRunArgumentsRejectsAmbiguity(t *testing.T) {
 		{"--agent", "child", "one.hmstr"},
 		{"--home", "/tmp/home", "one.hmstr"},
 		{"--unknown", "value", "one.hmstr"},
-		{"--entry"},
+		{"--entry", "old-name", "one.hmstr"},
 	} {
 		if _, err := ParseRunArguments(arguments); err == nil {
 			t.Fatalf("ParseRunArguments(%q) error = nil", arguments)

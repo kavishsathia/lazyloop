@@ -16,51 +16,46 @@ func Parse(source string) (*Program, Diagnostics) {
 	p := &parser{tokens: tokens, diagnostics: diagnostics}
 	program := &Program{}
 	for !p.at(TokenEOF) {
-		loop := p.parseLoop(true)
+		before := p.current
+		loop := p.parseLoop()
 		if loop != nil {
 			program.Loops = append(program.Loops, loop)
 		} else {
+			if p.current == before {
+				p.advance()
+			}
 			p.synchronizeTopLevel()
 		}
 	}
 	return program, p.diagnostics
 }
 
-func (p *parser) parseLoop(allowName bool) Loop {
+func (p *parser) parseLoop() Loop {
 	start := p.peek().Span.Start
 	kind := p.peek().Kind
-	if kind != TokenGoal && kind != TokenFlow && kind != TokenForeach {
-		p.errorAt(p.peek(), "expected goal, flow, or foreach")
+	if kind != TokenGoal && kind != TokenForeach {
+		p.errorAt(p.peek(), "expected goal or foreach; flow must be attached with 'with flow'")
 		return nil
 	}
 	p.advance()
 
 	if kind == TokenForeach {
-		name := ""
-		if allowName && p.at(TokenIdentifier) && p.peekNext().Kind == TokenIdentifier {
-			name = p.advance().Lexeme
-		}
 		binding := p.consume(TokenIdentifier, "expected foreach binding")
 		p.consume(TokenIn, "expected 'in' after foreach binding")
 		sequence := p.parseExpression()
 		p.consume(TokenLBrace, "expected '{' before foreach body")
-		body := p.parseLoop(false)
+		body := p.parseLoop()
 		end := p.consume(TokenRBrace, "expected '}' after foreach body")
 		if body == nil {
 			return nil
 		}
-		return &Foreach{Span: Span{Start: start, End: end.Span.End}, Name: name, Binding: binding.Lexeme, Sequence: sequence, Body: body}
-	}
-
-	name := ""
-	if allowName && p.at(TokenIdentifier) {
-		name = p.advance().Lexeme
+		return &Foreach{Span: Span{Start: start, End: end.Span.End}, Binding: binding.Lexeme, Sequence: sequence, Body: body}
 	}
 
 	p.consume(TokenLBrace, "expected '{' before loop body")
 	var statements []Statement
 	for !p.at(TokenRBrace) && !p.at(TokenEOF) {
-		statement := p.parseStatement(kind)
+		statement := p.parseStatement(TokenGoal)
 		if statement != nil {
 			statements = append(statements, statement)
 		} else {
@@ -68,15 +63,33 @@ func (p *parser) parseLoop(allowName bool) Loop {
 		}
 	}
 	end := p.consume(TokenRBrace, "expected '}' after loop body")
-	span := Span{Start: start, End: end.Span.End}
-	if kind == TokenGoal {
-		return &Goal{Span: span, Name: name, Statements: statements}
+	goal := &Goal{Span: Span{Start: start, End: end.Span.End}, Statements: statements}
+	if p.match(TokenWith) {
+		flowStart := p.peek().Span.Start
+		p.consume(TokenFlow, "expected 'flow' after 'with'")
+		p.consume(TokenLBrace, "expected '{' before flow body")
+		var flowStatements []Statement
+		for !p.at(TokenRBrace) && !p.at(TokenEOF) {
+			statement := p.parseStatement(TokenFlow)
+			if statement != nil {
+				flowStatements = append(flowStatements, statement)
+			} else {
+				p.synchronizeStatement()
+			}
+		}
+		flowEnd := p.consume(TokenRBrace, "expected '}' after flow body")
+		goal.Flow = &Flow{Span: Span{Start: flowStart, End: flowEnd.Span.End}, Statements: flowStatements}
+		goal.Span.End = flowEnd.Span.End
 	}
-	return &Flow{Span: span, Name: name, Statements: statements}
+	return goal
 }
 
 func (p *parser) parseStatement(loopKind TokenKind) Statement {
 	start := p.peek().Span.Start
+	if loopKind == TokenFlow && p.peek().Kind != TokenStep {
+		p.errorAt(p.peek(), "flow may contain only step declarations")
+		return nil
+	}
 	switch p.peek().Kind {
 	case TokenStep:
 		p.advance()
@@ -86,8 +99,8 @@ func (p *parser) parseStatement(loopKind TokenKind) Statement {
 		name := p.consume(TokenIdentifier, "expected step name")
 		p.consume(TokenAssign, "expected '=' after step name")
 		var value Value
-		if p.at(TokenGoal) || p.at(TokenFlow) || p.at(TokenForeach) {
-			value = &LoopValue{Loop: p.parseLoop(false)}
+		if p.at(TokenGoal) || p.at(TokenForeach) {
+			value = &LoopValue{Loop: p.parseLoop()}
 		} else {
 			value = p.parseExpression()
 		}

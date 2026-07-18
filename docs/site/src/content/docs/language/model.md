@@ -5,7 +5,9 @@ description: The execution and enforcement model behind goal, flow, and foreach.
 
 # Language model
 
-Hamster has three loop forms. They differ in how work is organized, but share one termination rule: normal completion requires every declared verifier to pass. An active limit can terminate the loop first.
+Hamster has two loop forms: `goal` and `foreach`. A goal may attach a `flow` as
+its imperative execution policy. Normal completion requires every declared
+verifier to pass; an active limit can terminate the loop first.
 
 ## Agent work and runtime work
 
@@ -13,11 +15,21 @@ Hamster has three loop forms. They differ in how work is organized, but share on
 
 This distinction is deliberate. Hamster never treats the agent's claim that tests passed as proof when it can run the check independently.
 
-## Loop forms
+## Loop forms and verification cadence
 
-- [`goal`](/reference/loop-goal/) repeats open-ended agent work until its verifiers pass.
-- [`flow`](/reference/loop-flow/) repeats an ordered set of named steps until its verifiers pass.
-- [`foreach`](/reference/loop-foreach/) runs an inner goal, flow, or foreach to completion for each element and collects its return values.
+- [`goal`](/reference/loop-goal/) repeats open-ended agent work and probes its
+  ordered verifiers after every hook-visible tool call.
+- [`with flow`](/reference/loop-flow/) constrains a goal to an ordered set of
+  named steps. Verification happens once per complete flow cycle, never between
+  its steps; failure begins the next cycle at the first step.
+- [`foreach`](/reference/loop-foreach/) runs an inner goal or foreach to
+  completion for each element and collects its return values. A goal inside it
+  may carry an attached flow.
+
+Verifier evaluation is cheap-to-expensive in source order and short-circuits
+on the first false or errored result. Passing the entire ladder completes the
+goal automatically. The optional `hamster signal goal-achieved` command merely
+requests an immediate probe.
 
 ## Guarantees
 

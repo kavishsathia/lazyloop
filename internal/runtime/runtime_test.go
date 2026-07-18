@@ -55,10 +55,11 @@ func signalEvent(id string) hook.Event {
 }
 
 func TestFlowAdvancesThenRunsIndependentVerifier(t *testing.T) {
-	runner, run, root := runtimeRun(t, `flow test {
-  step action = bash.run("touch marker");
+	runner, run, root := runtimeRun(t, `goal {
   verify exists = bash.check("test -f marker");
   return exists;
+} with flow {
+  step action = bash.run("touch marker");
 }`)
 	started, err := runner.Start(context.Background(), run.ID)
 	if err != nil {
@@ -82,12 +83,54 @@ func TestFlowAdvancesThenRunsIndependentVerifier(t *testing.T) {
 	}
 }
 
+func TestAttachedFlowProbesOnlyAfterCompleteCycle(t *testing.T) {
+	defaultRunner, run, _ := runtimeRun(t, `goal {
+  verify light = bash.check("light");
+  verify heavy = bash.check("heavy");
+} with flow {
+  step first = bash.run("first");
+  step second = bash.run("second");
+}`)
+	verifier := NewReplayVerifier([]VerificationResult{{Passed: false}})
+	runner := NewWithDependencies(defaultRunner.store, NewFixedClock(time.Now()), verifier)
+	started, err := runner.Start(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.HandleHook(context.Background(), postEvent("first")); err != nil {
+		t.Fatal(err)
+	}
+	afterFirst, err := runner.store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(verifier.Calls()) != 0 || afterFirst.StateID == started.StateID {
+		t.Fatalf("first step probed or failed to advance: state=%s calls=%#v", afterFirst.StateID, verifier.Calls())
+	}
+	decision, err := runner.HandleHook(context.Background(), postEvent("second"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := runner.store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.StateID != started.StateID || current.Iteration != 1 || !strings.Contains(decision.Context, "at light") {
+		t.Fatalf("cycle failure = %#v, decision=%#v", current, decision)
+	}
+	calls := verifier.Calls()
+	if len(calls) != 1 || calls[0].Command != "light" {
+		t.Fatalf("verifiers did not short-circuit: %#v", calls)
+	}
+}
+
 func TestAttemptLimitStartsAtDeclaration(t *testing.T) {
-	runner, run, _ := runtimeRun(t, `flow retrying {
+	runner, run, _ := runtimeRun(t, `goal {
   limit attempts 2;
-  step action = bash.run("true");
   verify never = false;
   return never;
+} with flow {
+  step action = bash.run("true");
 }`)
 	if _, err := runner.Start(context.Background(), run.ID); err != nil {
 		t.Fatal(err)
@@ -108,15 +151,16 @@ func TestAttemptLimitStartsAtDeclaration(t *testing.T) {
 }
 
 func TestForeachCollectsInnerLoopReturns(t *testing.T) {
-	runner, run, _ := runtimeRun(t, `flow collect {
+	runner, run, _ := runtimeRun(t, `goal {
+  verify complete = true;
+  return values;
+} with flow {
   step values = foreach item in [true, true] {
     goal {
       verify ready = item;
       return item;
     }
   };
-  verify complete = true;
-  return values;
 }`)
 	started, err := runner.Start(context.Background(), run.ID)
 	if err != nil {
@@ -137,12 +181,12 @@ func TestForeachCollectsInnerLoopReturns(t *testing.T) {
 	}
 }
 
-func TestAgentToolCallsDoNotClaimGoalCompletion(t *testing.T) {
-	runner, run, _ := runtimeRun(t, `goal work {
+func TestDeclarativeGoalProbesAfterEveryToolCall(t *testing.T) {
+	runner, run, _ := runtimeRun(t, `goal {
   verify ready = true;
   return ready;
 }`)
-	started, err := runner.Start(context.Background(), run.ID)
+	_, err := runner.Start(context.Background(), run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,16 +197,70 @@ func TestAgentToolCallsDoNotClaimGoalCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.StateID != started.StateID || current.Status != "running" || current.Iteration != 0 {
-		t.Fatalf("ordinary tool advanced goal: before=%s after=%#v", started.StateID, current)
+	if current.Status != "complete" || string(current.Result) != "true" {
+		t.Fatalf("ordinary tool did not complete goal: %#v", current)
 	}
-	if observations := runner.TakeObservations(run.ID); len(observations) != 0 {
-		t.Fatalf("ordinary tool ran verifiers: %#v", observations)
+	if observations := runner.TakeObservations(run.ID); len(observations) != 1 || !observations[0].Passed {
+		t.Fatalf("ordinary tool observations: %#v", observations)
+	}
+}
+
+func TestConsecutiveGoalsStopAtEachAgentWorkBoundary(t *testing.T) {
+	defaultRunner, run, _ := runtimeRun(t, `goal {
+  verify outer = bash.check("outer");
+  return outer;
+} with flow {
+  step first = goal {
+    verify first_done = bash.check("first");
+    return first_done;
+  };
+  step second = goal {
+    verify second_done = bash.check("second");
+    return second_done;
+  };
+}`)
+	verifier := NewReplayVerifier([]VerificationResult{{Passed: true}, {Passed: true}, {Passed: true}})
+	runner := NewWithDependencies(defaultRunner.store, NewFixedClock(time.Now()), verifier)
+	if _, err := runner.Start(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	decision, err := runner.HandleHook(context.Background(), postEvent("first-goal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := runner.store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != "running" || len(current.Stack) != 1 || current.Machine.States[0].Name != "work" {
+		t.Fatalf("first goal did not stop at second goal boundary: %#v", current)
+	}
+	if calls := verifier.Calls(); len(calls) != 1 || calls[0].Command != "first" {
+		t.Fatalf("first hook crossed into second goal: %#v", calls)
+	}
+	if !strings.Contains(decision.Context, "advanced") {
+		t.Fatalf("first goal transition context = %q", decision.Context)
+	}
+
+	if _, err := runner.HandleHook(context.Background(), postEvent("second-goal")); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := runner.store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Status != "complete" {
+		t.Fatalf("second goal and outer cycle did not complete: %#v", finished)
+	}
+	calls := verifier.Calls()
+	if len(calls) != 3 || calls[1].Command != "second" || calls[2].Command != "outer" {
+		t.Fatalf("goal boundary verifier order = %#v", calls)
 	}
 }
 
 func TestGoalSignalReturnsRemediationThenCompletes(t *testing.T) {
-	defaultRunner, run, _ := runtimeRun(t, `goal work {
+	defaultRunner, run, _ := runtimeRun(t, `goal {
   verify tests = bash.check("test-command");
   return tests;
 }`)
@@ -176,7 +274,7 @@ func TestGoalSignalReturnsRemediationThenCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if failed.Permission != "allow" || !strings.Contains(failed.Context, "Failed verification: tests") || !strings.Contains(failed.Context, "iteration 1") {
+	if failed.Permission != "allow" || !strings.Contains(failed.Context, "at tests") || !strings.Contains(failed.Context, "Iteration 1") {
 		t.Fatalf("failed signal decision = %#v", failed)
 	}
 	current, err := runner.store.GetRun(context.Background(), run.ID)
@@ -207,7 +305,7 @@ func TestGoalSignalReturnsRemediationThenCompletes(t *testing.T) {
 }
 
 func TestGoalSignalReplayIsIdempotentAfterCompletion(t *testing.T) {
-	runner, run, _ := runtimeRun(t, `goal work {
+	runner, run, _ := runtimeRun(t, `goal {
   verify ready = true;
   return ready;
 }`)
@@ -236,7 +334,7 @@ func TestGoalSignalReplayIsIdempotentAfterCompletion(t *testing.T) {
 }
 
 func TestGoalSignalTurnsVerifierErrorIntoRemediation(t *testing.T) {
-	defaultRunner, run, _ := runtimeRun(t, `goal work {
+	defaultRunner, run, _ := runtimeRun(t, `goal {
   verify tests = bash.check("missing-verifier");
 }`)
 	runner := NewWithDependencies(defaultRunner.store, NewFixedClock(time.Now()), NewReplayVerifier([]VerificationResult{{Error: "runner unavailable"}}))
@@ -260,9 +358,10 @@ func TestGoalSignalTurnsVerifierErrorIntoRemediation(t *testing.T) {
 }
 
 func TestGoalSignalDeniedDuringImperativeStep(t *testing.T) {
-	runner, run, _ := runtimeRun(t, `flow work {
-  step action = bash.run("true");
+	runner, run, _ := runtimeRun(t, `goal {
   verify ready = true;
+} with flow {
+  step action = bash.run("true");
 }`)
 	started, err := runner.Start(context.Background(), run.ID)
 	if err != nil {
@@ -285,11 +384,12 @@ func TestGoalSignalDeniedDuringImperativeStep(t *testing.T) {
 }
 
 func TestInjectedClockAndVerifierMakeLimitReplayDeterministic(t *testing.T) {
-	defaultRunner, run, _ := runtimeRun(t, `flow replay {
+	defaultRunner, run, _ := runtimeRun(t, `goal {
   limit time 1s;
-  step action = bash.run("ignored");
   verify ready = bash.check("recorded-check");
   return ready;
+} with flow {
+  step action = bash.run("ignored");
 }`)
 	clock := NewFixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	verifier := NewReplayVerifier([]VerificationResult{{Passed: false}})
@@ -319,7 +419,7 @@ func TestInjectedClockAndVerifierMakeLimitReplayDeterministic(t *testing.T) {
 }
 
 func TestExpiredTimeLimitRejectsOtherwisePassingVerification(t *testing.T) {
-	defaultRunner, run, _ := runtimeRun(t, `goal timed {
+	defaultRunner, run, _ := runtimeRun(t, `goal {
   limit time 1s;
   verify ready = bash.check("recorded-check");
   return ready;
