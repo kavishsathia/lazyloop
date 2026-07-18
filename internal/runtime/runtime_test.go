@@ -317,3 +317,31 @@ func TestInjectedClockAndVerifierMakeLimitReplayDeterministic(t *testing.T) {
 		t.Fatalf("verification observations = %#v", observations)
 	}
 }
+
+func TestExpiredTimeLimitRejectsOtherwisePassingVerification(t *testing.T) {
+	defaultRunner, run, _ := runtimeRun(t, `goal timed {
+  limit time 1s;
+  verify ready = bash.check("recorded-check");
+  return ready;
+}`)
+	clock := NewFixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	runner := NewWithDependencies(defaultRunner.store, clock, NewReplayVerifier([]VerificationResult{{Passed: true}}))
+	if _, err := runner.Start(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(time.Second)
+	decision, err := runner.SignalGoalAchieved(context.Background(), signalEvent("expired-success"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(decision.Context, "limit_exceeded") {
+		t.Fatalf("decision = %#v", decision)
+	}
+	finished, err := runner.store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Status != "limit_exceeded" || !strings.Contains(string(finished.Result), `"limit":"time"`) {
+		t.Fatalf("finished = %#v, result = %s", finished, finished.Result)
+	}
+}

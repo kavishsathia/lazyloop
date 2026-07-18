@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"hamster/internal/ir"
@@ -86,4 +87,27 @@ func TestRequireVerificationAndUniqueReturn(t *testing.T) {
 	if len(diagnostics) != 2 {
 		t.Fatalf("diagnostics = %v, want 2", diagnostics)
 	}
+}
+
+func TestRejectsLimitsTheRuntimeCannotEnforce(t *testing.T) {
+	for _, test := range []struct {
+		source  string
+		message string
+	}{
+		{`goal { limit cost 2; verify done = true; }`, `limit kind "cost" is not enforceable`},
+		{`goal { limit attempts 0; verify done = true; }`, `positive integer`},
+		{`goal { limit attempts 1.5; verify done = true; }`, `positive integer`},
+		{`goal { limit time 0s; verify done = true; }`, `positive duration`},
+		{`goal { limit time budget; verify done = true; }`, `static literal`},
+	} {
+		program, parseDiagnostics := language.Parse(test.source)
+		if len(parseDiagnostics) > 0 {
+			t.Fatalf("parse %q: %v", test.source, parseDiagnostics)
+		}
+		_, diagnostics := Compile(program)
+		if len(diagnostics) == 0 || !strings.Contains(diagnostics[0].Message, test.message) {
+			t.Fatalf("Compile(%q) diagnostics = %v, want %q", test.source, diagnostics, test.message)
+		}
+	}
+	compileSource(t, `goal { limit attempts 2; limit time 30m; verify done = true; }`)
 }

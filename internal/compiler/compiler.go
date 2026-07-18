@@ -2,6 +2,9 @@ package compiler
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
+	"time"
 
 	"hamster/internal/ir"
 	"hamster/internal/language"
@@ -69,6 +72,7 @@ func (c *compiler) compileStatements(machine *ir.Machine, statements []language.
 		for _, statement := range statements {
 			switch node := statement.(type) {
 			case *language.Limit:
+				c.validateLimit(node)
 				value := c.compileExpression(node.Value)
 				machine.States = append(machine.States, ir.State{Kind: ir.StateLimit, Executor: ir.ExecutorControl, Name: node.Kind, Limit: &ir.Limit{Kind: node.Kind, Value: value}, Span: node.Span})
 			case *language.Policy:
@@ -109,6 +113,7 @@ func (c *compiler) compileStatements(machine *ir.Machine, statements []language.
 			if goal {
 				continue
 			}
+			c.validateLimit(node)
 			value := c.compileExpression(node.Value)
 			machine.States = append(machine.States, ir.State{Kind: ir.StateLimit, Executor: ir.ExecutorControl, Name: node.Kind, Limit: &ir.Limit{Kind: node.Kind, Value: value}, Span: node.Span})
 		case *language.Policy:
@@ -131,6 +136,28 @@ func (c *compiler) compileStatements(machine *ir.Machine, statements []language.
 		c.error(machine.Span, fmt.Sprintf("%s loop must contain at least one verification", machine.Kind))
 	}
 	c.appendLoopTerminalStates(machine)
+}
+
+func (c *compiler) validateLimit(limit *language.Limit) {
+	literal, ok := limit.Value.(*language.Literal)
+	if !ok {
+		c.error(limit.Span, fmt.Sprintf("limit %s requires a static literal", limit.Kind))
+		return
+	}
+	switch limit.Kind {
+	case "attempts":
+		value, err := strconv.Atoi(strings.ReplaceAll(literal.Value, "_", ""))
+		if err != nil || value <= 0 {
+			c.error(limit.Span, "limit attempts requires a positive integer")
+		}
+	case "time":
+		value, err := time.ParseDuration(literal.Value)
+		if err != nil || value <= 0 {
+			c.error(limit.Span, "limit time requires a positive duration such as 30m")
+		}
+	default:
+		c.error(limit.Span, fmt.Sprintf("limit kind %q is not enforceable by this runtime; supported kinds are attempts and time", limit.Kind))
+	}
 }
 
 func (c *compiler) appendLoopTerminalStates(machine *ir.Machine) {

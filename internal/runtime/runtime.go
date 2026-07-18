@@ -338,6 +338,13 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 				}
 				continue
 			}
+			exceeded, err := enforceLimits(run, environment, r.clock.Now())
+			if err != nil {
+				return err
+			}
+			if exceeded {
+				return nil
+			}
 			if verificationsPass(run.Machine, environment) {
 				run.StateID = state.OnSuccess
 			} else {

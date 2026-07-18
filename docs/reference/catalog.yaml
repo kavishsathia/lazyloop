@@ -161,11 +161,12 @@ entries:
     keywords: [limit]
     since: 0.1.0
     stability: experimental
-    summary: Activates a prospective time, cost, or attempt bound from its position in the loop.
+    summary: Activates a prospective time or attempt bound from its position in the loop.
     syntax: ['limit kind expression;']
     semantics:
       - A limit starts counting only after execution reaches its clause.
       - Work completed before the clause does not consume that limit.
+      - Unsupported kinds, including cost until Codex exposes trustworthy usage evidence, fail compilation instead of running unenforced.
     postconditions:
       - predicate: exhausted limit terminates the loop
         description: The runtime refuses another iteration once an active bound is exhausted.
