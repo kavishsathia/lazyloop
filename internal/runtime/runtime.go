@@ -53,7 +53,7 @@ func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decisio
 	lock.Lock()
 	defer lock.Unlock()
 	if existing, eventErr := r.store.GetEventDecision(ctx, event.RequestID()); eventErr == nil {
-		return hook.Decision{Permission: existing.Decision, Reason: existing.Reason, Remediation: existing.Remediation, Tracked: true, RunID: run.ID}, nil
+		return decisionFromEvent(existing, run.ID), nil
 	} else if eventErr != sql.ErrNoRows {
 		return hook.Decision{}, eventErr
 	}
@@ -78,7 +78,8 @@ func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decisio
 		environment[state.Name] = decodeToolResponse(event.ToolResponse)
 		run.StateID = state.Next
 	} else if state.Kind == ir.StateAgentWork {
-		run.StateID = state.Next
+		decision := hook.Decision{Permission: "allow", Tracked: true, RunID: run.ID}
+		return decision, r.recordWithoutAdvance(ctx, event, run, decision)
 	} else {
 		decision := hook.Decision{Permission: "allow", Tracked: true, RunID: run.ID}
 		return decision, r.recordWithoutAdvance(ctx, event, run, decision)
@@ -102,6 +103,131 @@ func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decisio
 		err = r.store.FinalizeRun(ctx, run.ID)
 	}
 	return decision, err
+}
+
+// SignalGoalAchieved is the only operation that advances declarative agent
+// work. Tool calls made while working are observations, not claims of
+// completion; the explicit signal moves into independent verification.
+func (r *Runner) SignalGoalAchieved(ctx context.Context, event hook.Event) (hook.Decision, error) {
+	if existing, err := r.store.GetEventDecision(ctx, event.RequestID()); err == nil {
+		return decisionFromEvent(existing, existing.RunID), nil
+	} else if err != sql.ErrNoRows {
+		return hook.Decision{}, err
+	}
+
+	run, err := r.store.FindCurrentRun(ctx, event.SessionID, event.AgentID)
+	if err == sql.ErrNoRows {
+		decision := hook.Decision{
+			Permission: "deny", Reason: "goal-achieved requires a bound Hamster run",
+			Remediation: "Start a loop with hamster run, then signal only when its declarative work is ready for verification.",
+		}
+		return decision, r.recordWithoutAdvance(ctx, event, &store.Run{}, decision)
+	}
+	if err != nil {
+		return hook.Decision{}, err
+	}
+
+	lock := r.runLock(run.ID)
+	lock.Lock()
+	defer lock.Unlock()
+	if existing, eventErr := r.store.GetEventDecision(ctx, event.RequestID()); eventErr == nil {
+		return decisionFromEvent(existing, run.ID), nil
+	} else if eventErr != sql.ErrNoRows {
+		return hook.Decision{}, eventErr
+	}
+	run, err = r.store.GetRun(ctx, run.ID)
+	if err != nil {
+		return hook.Decision{}, err
+	}
+	state, ok := currentState(run)
+	if !ok {
+		return hook.Decision{}, fmt.Errorf("state %q does not exist", run.StateID)
+	}
+	if state.Kind != ir.StateAgentWork {
+		decision := hook.Decision{
+			Permission: "deny", Tracked: true, RunID: run.ID,
+			Reason:      fmt.Sprintf("run %s is at %s, not declarative agent work", run.ID, state.Kind),
+			Remediation: "Complete the current imperative step before signaling goal-achieved.",
+		}
+		return decision, r.recordWithoutAdvance(ctx, event, run, decision)
+	}
+
+	expectedState := run.StateID
+	environment, err := decodeEnvironment(run.Variables)
+	if err != nil {
+		return hook.Decision{}, err
+	}
+	observationOffset := r.observationCount(run.ID)
+	run.StateID = state.Next
+	if err := r.pump(ctx, run, environment); err != nil {
+		return hook.Decision{}, err
+	}
+	run.Variables, _ = json.Marshal(environment)
+	observations := r.observationsAfter(run.ID, observationOffset)
+	decision := signalDecision(run, observations)
+	payload := event.Raw
+	if len(payload) == 0 {
+		payload = hook.MarshalEvent(event)
+	}
+	storedDecision := store.EventDecision{
+		Decision: decision.Permission, Reason: decision.Reason, Remediation: decision.Remediation,
+		Context: decision.Context, RunID: run.ID,
+	}
+	replayed, err := r.store.ApplyEvent(ctx, event.RequestID(), "goal-achieved", payload, storedDecision, expectedState, run)
+	if err != nil {
+		return hook.Decision{}, err
+	}
+	if replayed {
+		existing, getErr := r.store.GetEventDecision(ctx, event.RequestID())
+		if getErr != nil {
+			return hook.Decision{}, getErr
+		}
+		return decisionFromEvent(existing, run.ID), nil
+	}
+	if run.Status == "complete" {
+		err = r.store.FinalizeRun(ctx, run.ID)
+	}
+	return decision, err
+}
+
+func signalDecision(run *store.Run, observations []VerificationObservation) hook.Decision {
+	decision := hook.Decision{Permission: "allow", Tracked: true, RunID: run.ID}
+	if run.Status == "complete" {
+		decision.Context = fmt.Sprintf("Hamster independently verified run %s and completed it with result %s.", run.ID, string(run.Result))
+		return decision
+	}
+	if run.Status != "running" {
+		decision.Context = fmt.Sprintf("Hamster verification terminated run %s with status %s and result %s. Escalate or use the kill switch before continuing outside this loop.", run.ID, run.Status, string(run.Result))
+		return decision
+	}
+	failed := make([]string, 0)
+	for _, observation := range observations {
+		if observation.Passed && observation.Error == "" {
+			continue
+		}
+		detail := observation.Name
+		if observation.Error != "" {
+			detail += ": " + observation.Error
+		}
+		failed = append(failed, detail)
+	}
+	if len(failed) > 0 {
+		decision.Context = fmt.Sprintf("Hamster rejected the completion claim for run %s. Failed verification: %s. Continue the declarative work at iteration %d, then run hamster signal goal-achieved again.", run.ID, strings.Join(failed, "; "), run.Iteration)
+		return decision
+	}
+	decision.Context = fmt.Sprintf("Hamster accepted the completion signal for run %s and advanced to %s.", run.ID, run.StateID)
+	return decision
+}
+
+func decisionFromEvent(existing store.EventDecision, fallbackRunID string) hook.Decision {
+	runID := existing.RunID
+	if runID == "" {
+		runID = fallbackRunID
+	}
+	return hook.Decision{
+		Permission: existing.Decision, Reason: existing.Reason, Remediation: existing.Remediation,
+		Context: existing.Context, Tracked: runID != "", RunID: runID,
+	}
 }
 
 func (r *Runner) Start(ctx context.Context, runID string) (*store.Run, error) {
@@ -151,7 +277,9 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 			value, err := r.evaluator(run).Evaluate(ctx, *state.Expression, environment)
 			if err != nil {
 				r.recordVerification(run.ID, VerificationObservation{Name: state.Name, Command: verificationCommand(state.Expression), Error: err.Error()})
-				return fmt.Errorf("verify %s: %w", state.Name, err)
+				environment[state.Name] = false
+				run.StateID = state.Next
+				continue
 			}
 			passed := truthy(value)
 			r.recordVerification(run.ID, VerificationObservation{Name: state.Name, Command: verificationCommand(state.Expression), Passed: passed})
@@ -452,12 +580,28 @@ func (r *Runner) TakeObservations(runID string) []VerificationObservation {
 	return observations
 }
 
+func (r *Runner) observationCount(runID string) int {
+	r.obsMu.Lock()
+	defer r.obsMu.Unlock()
+	return len(r.observations[runID])
+}
+
+func (r *Runner) observationsAfter(runID string, offset int) []VerificationObservation {
+	r.obsMu.Lock()
+	defer r.obsMu.Unlock()
+	observations := r.observations[runID]
+	if offset < 0 || offset > len(observations) {
+		offset = len(observations)
+	}
+	return append([]VerificationObservation(nil), observations[offset:]...)
+}
+
 func (r *Runner) recordWithoutAdvance(ctx context.Context, event hook.Event, run *store.Run, decision hook.Decision) error {
 	payload := event.Raw
 	if len(payload) == 0 {
 		payload = hook.MarshalEvent(event)
 	}
 	_, _, err := r.store.RecordEvent(ctx, event.RequestID(), run.ID, event.EventName, payload,
-		store.EventDecision{Decision: decision.Permission, Reason: decision.Reason, Remediation: decision.Remediation})
+		store.EventDecision{Decision: decision.Permission, Reason: decision.Reason, Remediation: decision.Remediation, Context: decision.Context, RunID: decision.RunID})
 	return err
 }

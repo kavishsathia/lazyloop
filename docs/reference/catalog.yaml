@@ -11,6 +11,7 @@ entries:
     syntax: ['goal [name] { goal-statement* }']
     semantics:
       - Policies and limits activate in source order before agent work begins.
+      - Agent tool calls do not claim completion; `hamster signal goal-achieved` explicitly enters verification.
       - The runtime executes every verifier; failure returns control to the next iteration.
     postconditions:
       - predicate: every verify is true
@@ -386,6 +387,42 @@ entries:
         test: parse
         source: 'goal { verify finished = true; return "artifact-id"; }'
     related: [statement.return, process.wait]
+
+  - id: process.signal
+    title: Signal goal completion
+    kind: process
+    aliases: [signal, goal-achieved]
+    since: 0.1.0
+    stability: experimental
+    summary: Declares that agent-owned goal work is ready for independent Hamster verification.
+    syntax: ['hamster signal goal-achieved']
+    semantics:
+      - Ordinary tool calls never advance a declarative agent-work state.
+      - The Codex pre-tool hook owns the transition from agent work into verification.
+      - Failed or errored verifiers return concrete remediation and begin the next iteration.
+      - Replaying the same hook request is idempotent, including after the run completes and unbinds.
+    preconditions:
+      - predicate: caller has an active bound run at agent work
+        description: Completion can only be claimed from a declarative work state.
+        checked: hook
+    postconditions:
+      - predicate: every verifier passed or the run remains incomplete
+        description: A signal cannot complete a run without independent verifier evidence.
+        guarantee: enforced
+        evidence: atomic signal event, state update, and persisted verifier observations
+    failures:
+      - code: verification_failed
+        when: One or more verifiers return false or cannot be evaluated.
+        remediation: Continue the reported iteration, address the named verifier, and signal again.
+      - code: wrong_state
+        when: The current machine is waiting for an imperative step rather than agent work.
+        remediation: Complete the current step before signaling goal-achieved.
+    examples:
+      - title: Submit work for verification
+        language: shell
+        test: none
+        source: 'hamster signal goal-achieved'
+    related: [loop.goal, statement.verify, process.return]
 
   - id: process.kill
     title: Kill switch

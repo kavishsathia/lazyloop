@@ -45,7 +45,13 @@ agent starts a repository loop with:
 ```sh
 hamster run build-provider
 hamster status
+hamster signal goal-achieved
 ```
+
+Declarative work advances only through the explicit completion signal. Ordinary
+tool calls leave the goal parked. Hamster then runs its independent verifiers;
+success completes the loop, while failure reports the named verifier and starts
+the next iteration with remediation for the agent.
 
 If a loop is preventing work needed to repair Hamster itself, use the
 high-priority emergency brake:

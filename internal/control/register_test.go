@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"hamster/internal/hook"
@@ -81,5 +82,56 @@ func TestHookLeavesExplicitBindingToCLI(t *testing.T) {
 	}
 	if _, err := state.FindCurrentRun(ctx, event.SessionID, event.AgentID); err != sql.ErrNoRows {
 		t.Fatalf("FindCurrentRun() error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestHookGoalAchievedSignalCompletesBoundGoal(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	state, err := store.Open(filepath.Join(root, "hamster.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	runner := hamsterruntime.New(state)
+	event := hook.Event{SessionID: "codex-session", AgentID: "ROOT", WorkspaceRoot: root, EventName: "PreToolUse", ToolName: "Bash", ToolUseID: "run"}
+	started, err := RegisterFromHook(ctx, state, runner, event, Command{
+		Name: "run", Args: []string{"--text", `goal work { verify done = true; return done; }`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.ToolUseID = "signal"
+	decision, err := RegisterFromHook(ctx, state, runner, event, Command{Name: "signal", Args: []string{"goal-achieved"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Permission != "allow" || decision.RunID != started.RunID || !decision.Tracked || !strings.Contains(decision.Context, "independently verified") {
+		t.Fatalf("decision = %#v", decision)
+	}
+	run, err := state.GetRun(ctx, started.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != "complete" {
+		t.Fatalf("run status = %s", run.Status)
+	}
+}
+
+func TestHookRejectsMalformedGoalSignal(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	state, err := store.Open(filepath.Join(root, "hamster.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	event := hook.Event{SessionID: "codex-session", WorkspaceRoot: root}
+	decision, err := RegisterFromHook(ctx, state, hamsterruntime.New(state), event, Command{Name: "signal", Args: []string{"done"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Permission != "deny" || decision.Reason != "usage: hamster signal goal-achieved" {
+		t.Fatalf("decision = %#v", decision)
 	}
 }

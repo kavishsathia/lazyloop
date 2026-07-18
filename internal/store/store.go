@@ -514,6 +514,8 @@ type EventDecision struct {
 	Decision    string `json:"decision"`
 	Reason      string `json:"reason,omitempty"`
 	Remediation string `json:"remediation,omitempty"`
+	Context     string `json:"context,omitempty"`
+	RunID       string `json:"run_id,omitempty"`
 }
 
 func (s *Store) RecordEvent(ctx context.Context, requestID, runID, kind string, payload json.RawMessage, decision EventDecision) (EventDecision, bool, error) {

@@ -21,6 +21,12 @@ func RegisterFromHook(ctx context.Context, state *store.Store, runner *hamsterru
 	if command.Name == "kill" {
 		return handleKillCommand(ctx, state, event, command.Args)
 	}
+	if command.Name == "signal" {
+		if len(command.Args) != 1 || command.Args[0] != "goal-achieved" {
+			return hook.Decision{Permission: "deny", Reason: "usage: hamster signal goal-achieved", Remediation: "Use the explicit goal-achieved signal after finishing declarative work."}, nil
+		}
+		return runner.SignalGoalAchieved(ctx, event)
+	}
 	if command.Name == "exec" {
 		return handleExecCommand(ctx, state, runner, event, command.Args)
 	}

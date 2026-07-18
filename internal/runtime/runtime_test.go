@@ -2,9 +2,11 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,6 +44,12 @@ func runtimeRun(t *testing.T, source string) (*Runner, *store.Run, string) {
 func postEvent(id string) hook.Event {
 	response, _ := json.Marshal(map[string]any{"exit_code": 0})
 	event := hook.Event{SessionID: "session", EventName: "PostToolUse", ToolName: "Bash", ToolUseID: id, ToolResponse: response}
+	event.Raw = hook.MarshalEvent(event)
+	return event
+}
+
+func signalEvent(id string) hook.Event {
+	event := hook.Event{SessionID: "session", EventName: "PreToolUse", ToolName: "Bash", ToolUseID: id}
 	event.Raw = hook.MarshalEvent(event)
 	return event
 }
@@ -114,15 +122,162 @@ func TestForeachCollectsInnerLoopReturns(t *testing.T) {
 	if len(started.Stack) != 2 {
 		t.Fatalf("stack depth = %d, want outer flow and foreach", len(started.Stack))
 	}
-	if _, err := runner.HandleHook(context.Background(), postEvent("item-1")); err != nil {
+	if _, err := runner.SignalGoalAchieved(context.Background(), signalEvent("item-1")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runner.HandleHook(context.Background(), postEvent("item-2")); err != nil {
+	if _, err := runner.SignalGoalAchieved(context.Background(), signalEvent("item-2")); err != nil {
 		t.Fatal(err)
 	}
 	finished, _ := runner.store.GetRun(context.Background(), run.ID)
 	if finished.Status != "complete" || string(finished.Result) != `[true,true]` {
 		t.Fatalf("status = %s, result = %s", finished.Status, finished.Result)
+	}
+}
+
+func TestAgentToolCallsDoNotClaimGoalCompletion(t *testing.T) {
+	runner, run, _ := runtimeRun(t, `goal work {
+  verify ready = true;
+  return ready;
+}`)
+	started, err := runner.Start(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.HandleHook(context.Background(), postEvent("ordinary-tool")); err != nil {
+		t.Fatal(err)
+	}
+	current, err := runner.store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.StateID != started.StateID || current.Status != "running" || current.Iteration != 0 {
+		t.Fatalf("ordinary tool advanced goal: before=%s after=%#v", started.StateID, current)
+	}
+	if observations := runner.TakeObservations(run.ID); len(observations) != 0 {
+		t.Fatalf("ordinary tool ran verifiers: %#v", observations)
+	}
+}
+
+func TestGoalSignalReturnsRemediationThenCompletes(t *testing.T) {
+	defaultRunner, run, _ := runtimeRun(t, `goal work {
+  verify tests = bash.check("test-command");
+  return tests;
+}`)
+	verifier := NewReplayVerifier([]VerificationResult{{Passed: false}, {Passed: true}})
+	runner := NewWithDependencies(defaultRunner.store, NewFixedClock(time.Now()), verifier)
+	if _, err := runner.Start(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	failed, err := runner.SignalGoalAchieved(context.Background(), signalEvent("claim-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Permission != "allow" || !strings.Contains(failed.Context, "Failed verification: tests") || !strings.Contains(failed.Context, "iteration 1") {
+		t.Fatalf("failed signal decision = %#v", failed)
+	}
+	current, err := runner.store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != "running" || current.Iteration != 1 {
+		t.Fatalf("failed signal run = %#v", current)
+	}
+
+	passed, err := runner.SignalGoalAchieved(context.Background(), signalEvent("claim-2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(passed.Context, "independently verified") || !strings.Contains(passed.Context, "result true") {
+		t.Fatalf("passed signal decision = %#v", passed)
+	}
+	finished, err := runner.store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Status != "complete" || string(finished.Result) != "true" {
+		t.Fatalf("finished = %#v", finished)
+	}
+	if _, err := runner.store.FindCurrentRun(context.Background(), "session", ""); err != sql.ErrNoRows {
+		t.Fatalf("completed run remains bound: %v", err)
+	}
+}
+
+func TestGoalSignalReplayIsIdempotentAfterCompletion(t *testing.T) {
+	runner, run, _ := runtimeRun(t, `goal work {
+  verify ready = true;
+  return ready;
+}`)
+	if _, err := runner.Start(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	event := signalEvent("same-claim")
+	first, err := runner.SignalGoalAchieved(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := runner.SignalGoalAchieved(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Context != second.Context || first.RunID != second.RunID || !second.Tracked {
+		t.Fatalf("replay changed decision: first=%#v second=%#v", first, second)
+	}
+	finished, err := runner.store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Iteration != 0 || finished.Status != "complete" {
+		t.Fatalf("replay mutated run: %#v", finished)
+	}
+}
+
+func TestGoalSignalTurnsVerifierErrorIntoRemediation(t *testing.T) {
+	defaultRunner, run, _ := runtimeRun(t, `goal work {
+  verify tests = bash.check("missing-verifier");
+}`)
+	runner := NewWithDependencies(defaultRunner.store, NewFixedClock(time.Now()), NewReplayVerifier([]VerificationResult{{Error: "runner unavailable"}}))
+	if _, err := runner.Start(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := runner.SignalGoalAchieved(context.Background(), signalEvent("errored-claim"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Permission != "allow" || !strings.Contains(decision.Context, "tests: runner unavailable") {
+		t.Fatalf("decision = %#v", decision)
+	}
+	current, err := runner.store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != "running" || current.Iteration != 1 {
+		t.Fatalf("verifier error did not return to work: %#v", current)
+	}
+}
+
+func TestGoalSignalDeniedDuringImperativeStep(t *testing.T) {
+	runner, run, _ := runtimeRun(t, `flow work {
+  step action = bash.run("true");
+  verify ready = true;
+}`)
+	started, err := runner.Start(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := runner.SignalGoalAchieved(context.Background(), signalEvent("early-claim"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Permission != "deny" || !strings.Contains(decision.Remediation, "imperative step") {
+		t.Fatalf("decision = %#v", decision)
+	}
+	current, err := runner.store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.StateID != started.StateID {
+		t.Fatalf("denied signal advanced from %s to %s", started.StateID, current.StateID)
 	}
 }
 

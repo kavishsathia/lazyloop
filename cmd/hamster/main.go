@@ -56,6 +56,8 @@ func run(ctx context.Context, arguments []string) error {
 		return hookCommand(ctx)
 	case "run":
 		return runCommand(ctx, arguments[1:])
+	case "signal":
+		return signalCommand(arguments[1:])
 	case "exec":
 		return execCommand(ctx, arguments[1:])
 	case "wait":
@@ -71,6 +73,14 @@ func run(ctx context.Context, arguments []string) error {
 	default:
 		return usageError()
 	}
+}
+
+func signalCommand(arguments []string) error {
+	if len(arguments) != 1 || arguments[0] != "goal-achieved" {
+		return errors.New("usage: hamster signal goal-achieved")
+	}
+	fmt.Println("Hamster completion signal handled by the Codex hook.")
+	return nil
 }
 
 func manCommand(arguments []string) error {
@@ -738,5 +748,5 @@ func requestID() string {
 }
 
 func usageError() error {
-	return errors.New("usage: hamster <init|ui|man|run|exec|wait|kill|status|inspect|trace|hook|daemon|version>")
+	return errors.New("usage: hamster <init|ui|man|run|signal|exec|wait|kill|status|inspect|trace|hook|daemon|version>")
 }
