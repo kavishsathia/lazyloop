@@ -6,6 +6,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,6 +21,7 @@ import (
 	"hamster/internal/hook"
 	"hamster/internal/hookclient"
 	"hamster/internal/language"
+	"hamster/internal/playground"
 	"hamster/internal/project"
 	"hamster/internal/reference"
 	"hamster/internal/store"
@@ -48,6 +51,8 @@ func run(ctx context.Context, arguments []string) error {
 		return initProject(arguments[1:])
 	case "ui":
 		return uiCommand(ctx, arguments[1:])
+	case "playground":
+		return playgroundCommand(arguments[1:])
 	case "man":
 		return manCommand(arguments[1:])
 	case "daemon":
@@ -457,6 +462,67 @@ func daemonCommand(arguments []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return daemon.New(state).ServeWithDashboard(ctx, paths.Socket, paths.DashboardAddress, paths.DashboardFile)
+}
+
+// playgroundCommand serves the experiment workbench. It is deliberately a
+// separate utility from the observability console: that one watches a session
+// you are already running, this one starts sessions so you can see how a loop
+// behaves before trusting it with real work.
+func playgroundCommand(arguments []string) error {
+	flags := flag.NewFlagSet("playground", flag.ContinueOnError)
+	address := flags.String("http", "127.0.0.1:7332", "loopback address for the playground")
+	homeFlag := flags.String("home", "", "user home directory")
+	workRoot := flags.String("workspaces", "", "directory that holds throwaway experiment workspaces")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if err := playground.ValidateAddress(*address); err != nil {
+		return err
+	}
+	home, err := resolveHome(*homeFlag)
+	if err != nil {
+		return err
+	}
+	paths := daemon.DefaultPaths(home)
+	state, err := store.Open(paths.Database)
+	if err != nil {
+		return err
+	}
+	defer state.Close()
+
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if executable, err = filepath.Abs(executable); err != nil {
+		return err
+	}
+	root := *workRoot
+	if root == "" {
+		root = filepath.Join(paths.Root, "playground")
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+
+	listener, err := net.Listen("tcp", *address)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	server := &http.Server{
+		Handler:           playground.NewHandler(state, playground.NewSupervisor(state, executable, home, root)),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() { <-ctx.Done(); _ = server.Close() }()
+
+	fmt.Printf("Hamster playground on http://%s\nWorkspaces: %s\n", listener.Addr(), root)
+	if err := server.Serve(listener); err != nil && ctx.Err() == nil {
+		return err
+	}
+	return nil
 }
 
 func uiCommand(ctx context.Context, arguments []string) error {
@@ -1067,5 +1133,5 @@ func requestID() string {
 }
 
 func usageError() error {
-	return errors.New("usage: hamster <init|ui|man|run|signal|exec|wait|taste|traps|resolve|audits|audit|kill|status|inspect|trace|hook|daemon|version>")
+	return errors.New("usage: hamster <init|ui|playground|man|run|signal|exec|wait|taste|traps|resolve|audits|audit|kill|status|inspect|trace|hook|daemon|version>")
 }

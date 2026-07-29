@@ -208,6 +208,29 @@ CREATE TABLE IF NOT EXISTS taste_clauses (
   UNIQUE(workspace_id, name, status)
 );
 
+CREATE TABLE IF NOT EXISTS playground_runs (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
+  script TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  taste_json BLOB NOT NULL DEFAULT '[]',
+  workspace_root TEXT NOT NULL,
+  status TEXT NOT NULL,
+  exit_code INTEGER,
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS playground_events (
+  playground_run_id TEXT NOT NULL REFERENCES playground_runs(id),
+  sequence INTEGER NOT NULL,
+  stream TEXT NOT NULL,
+  payload_json BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(playground_run_id, sequence)
+);
+
 CREATE TABLE IF NOT EXISTS traces (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -257,7 +280,7 @@ CREATE INDEX IF NOT EXISTS trace_events_trace_id ON trace_events(trace_id, seque
 	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS unique_run_fork_key ON runs(fork_key) WHERE fork_key <> ''`); err != nil {
 		return fmt.Errorf("create fork key index: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 10`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 11`); err != nil {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	return nil

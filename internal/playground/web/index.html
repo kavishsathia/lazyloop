@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hamster playground</title>
+<link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+<header>
+  <h1>Hamster playground</h1>
+  <p>Run a loop against a throwaway workspace and watch what the agent tried against what Hamster allowed.</p>
+</header>
+
+<main>
+  <section class="config">
+    <label class="field">
+      <span>Loop <em id="compile-status">&nbsp;</em></span>
+      <textarea id="script" spellcheck="false" rows="18"></textarea>
+    </label>
+
+    <label class="field">
+      <span>Prompt</span>
+      <textarea id="prompt" rows="4" placeholder="What should the agent do?"></textarea>
+    </label>
+
+    <div class="field">
+      <span>Taste clauses <button type="button" id="add-taste" class="ghost">+ add</button></span>
+      <div id="taste"></div>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="run">Run experiment</button>
+      <button type="button" id="cancel" class="ghost" hidden>Cancel</button>
+      <span id="launch-error" class="error"></span>
+    </div>
+
+    <div class="history">
+      <span>Past runs</span>
+      <ul id="history"></ul>
+    </div>
+  </section>
+
+  <section class="results">
+    <div id="summary" class="summary"></div>
+    <nav class="tabs">
+      <button type="button" data-tab="timeline" class="active">Timeline</button>
+      <button type="button" data-tab="loops">Loop state</button>
+      <button type="button" data-tab="agent">Agent output</button>
+    </nav>
+    <div id="timeline" class="pane"></div>
+    <div id="loops" class="pane" hidden></div>
+    <div id="agent" class="pane" hidden></div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
