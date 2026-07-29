@@ -6,17 +6,23 @@ import (
 )
 
 type Event struct {
-	SessionID     string          `json:"session_id"`
-	TurnID        string          `json:"turn_id,omitempty"`
-	AgentID       string          `json:"agent_id,omitempty"`
-	AgentType     string          `json:"agent_type,omitempty"`
-	EventName     string          `json:"hook_event_name"`
-	ToolName      string          `json:"tool_name,omitempty"`
-	ToolUseID     string          `json:"tool_use_id,omitempty"`
-	ToolInput     json.RawMessage `json:"tool_input,omitempty"`
-	ToolResponse  json.RawMessage `json:"tool_response,omitempty"`
-	WorkspaceRoot string          `json:"cwd,omitempty"`
-	Raw           json.RawMessage `json:"raw,omitempty"`
+	SessionID    string          `json:"session_id"`
+	TurnID       string          `json:"turn_id,omitempty"`
+	AgentID      string          `json:"agent_id,omitempty"`
+	AgentType    string          `json:"agent_type,omitempty"`
+	EventName    string          `json:"hook_event_name"`
+	ToolName     string          `json:"tool_name,omitempty"`
+	ToolUseID    string          `json:"tool_use_id,omitempty"`
+	ToolInput    json.RawMessage `json:"tool_input,omitempty"`
+	ToolResponse json.RawMessage `json:"tool_response,omitempty"`
+	Prompt       string          `json:"prompt,omitempty"`
+	LastMessage  string          `json:"last_assistant_message,omitempty"`
+	// StopHookActive is Codex's own re-entry guard: it is true when this stop is
+	// already the result of a blocked stop, so a continuation nudge is given at
+	// most once rather than looping forever.
+	StopHookActive bool            `json:"stop_hook_active,omitempty"`
+	WorkspaceRoot  string          `json:"cwd,omitempty"`
+	Raw            json.RawMessage `json:"raw,omitempty"`
 }
 
 type HookRequest struct {

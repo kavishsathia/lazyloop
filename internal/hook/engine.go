@@ -53,7 +53,8 @@ func (e *Engine) authorize(run *store.Run, event Event) Decision {
 	// to continue would make the answer arrive too late to matter.
 	if run.Status == "trapped" {
 		return deny(fmt.Sprintf("Hamster run %s is suspended at a trap and is waiting for a human decision.", run.ID),
-			"Stop working on this loop. A supervisor must run hamster traps and hamster resolve outside Codex before it can continue.")
+			"End your turn and put the question to the person running this session; their reply resolves it. "+
+				"Outside an interactive session a supervisor answers with hamster traps and hamster resolve.")
 	}
 	if run.Status == "waiting" {
 		if isWaitTool(event.ToolName) {

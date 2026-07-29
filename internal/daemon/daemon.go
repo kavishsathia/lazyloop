@@ -394,6 +394,12 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 				// call. Anything else that still invokes the CLI would reach the
 				// daemon without ever passing the authority check.
 				result = control.DenyDisguisedInvocation()
+			} else if params.Event.EventName == "Stop" {
+				result, err = s.runner.HandleStop(ctx, params.Event)
+			} else if params.Event.EventName == "SubagentStop" {
+				result, err = s.runner.HandleSubagentStop(ctx, params.Event)
+			} else if params.Event.EventName == "UserPromptSubmit" {
+				result, err = s.runner.HandleUserPrompt(ctx, params.Event)
 			} else if params.Event.EventName == "PostToolUse" {
 				if isSpawnTool(params.Event.ToolName) {
 					var child *store.Run

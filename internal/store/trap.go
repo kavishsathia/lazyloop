@@ -204,6 +204,13 @@ WHERE t.run_id=? AND t.state_id=? AND t.iteration=?`, runID, stateID, iteration)
 	return scanTrap(row)
 }
 
+// FindOpenTrapForRun returns the question a suspended run is waiting on.
+func (s *Store) FindOpenTrapForRun(ctx context.Context, runID string) (*Trap, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+trapColumns+` `+trapJoin+`
+WHERE t.run_id=? AND t.status='open' ORDER BY t.created_at LIMIT 1`, runID)
+	return scanTrap(row)
+}
+
 // ListOpenTraps returns the supervisor's review queue, oldest first.
 func (s *Store) ListOpenTraps(ctx context.Context, workspaceRoot string) ([]Trap, error) {
 	query := `SELECT ` + trapColumns + ` ` + trapJoin + ` WHERE t.status='open'`

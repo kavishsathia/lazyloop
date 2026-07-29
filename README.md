@@ -105,13 +105,38 @@ matter. The agent may read the queue, but `hamster resolve` is denied at the
 hook: a trap is only a real transfer of control if the agent it suspends cannot
 answer it.
 
-The supervisor answers from outside Codex, in batch:
+How the question reaches you depends on whether you are there.
+
+**In an interactive session**, every tool call is denied and the agent is told to
+end its turn and put the question to you. Ending the turn is how control returns
+to a person — Codex rejects an `ask` permission decision, so there is no way for
+Hamster to raise a prompt of its own. Your reply resolves it:
+
+```
+> approve
+> reject the names read like Java
+> choose sentinel
+```
+
+Hamster has no model, so it never interprets: the reply must start with the word
+the question asked for. Anything else leaves the trap open and repeats the
+question. A rejection must say what was wrong, because that reasoning is what
+the agent re-derives the work from.
+
+**Unattended**, there is nobody to ask, so the question waits in a queue you
+answer from outside Codex, in batch:
 
 ```sh
 hamster traps
 hamster resolve <trap-id> --approve
-hamster resolve <trap-id> --reject --choose sentinel --note "reads better"
+hamster resolve <trap-id> --reject --note "reads better"
 ```
+
+Hamster also refuses to let an agent end its turn while a loop is unfinished. A
+`Stop` with work still pending is blocked once, with a continuation prompt
+naming the next permitted action — so an agent cannot quietly abandon a loop.
+Once is the limit: Codex re-enters with `stop_hook_active`, and a second block
+would trap the agent forever.
 
 Approval advances the flow. Rejection re-derives the work from the machine's
 initial state exactly like a failed verifier, so a verdict costs a re-run and

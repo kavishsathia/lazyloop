@@ -3,7 +3,11 @@ package hook
 import "encoding/json"
 
 type Decision struct {
-	Permission   string          `json:"permission"`
+	Permission string `json:"permission"`
+	// Block ends a Stop hook by refusing to let the turn finish. Continuation is
+	// the prompt Codex hands back to the agent.
+	Block        bool            `json:"block,omitempty"`
+	Continuation string          `json:"continuation,omitempty"`
 	Reason       string          `json:"reason,omitempty"`
 	Remediation  string          `json:"remediation,omitempty"`
 	Tracked      bool            `json:"tracked"`
@@ -13,6 +17,8 @@ type Decision struct {
 }
 
 type codexOutput struct {
+	Decision           string              `json:"decision,omitempty"`
+	Reason             string              `json:"reason,omitempty"`
 	HookSpecificOutput *hookSpecificOutput `json:"hookSpecificOutput,omitempty"`
 }
 
@@ -26,6 +32,16 @@ type hookSpecificOutput struct {
 
 func CodexOutput(eventName string, decision Decision) ([]byte, error) {
 	output := codexOutput{}
+	// A Stop hook speaks a different dialect: it blocks the turn from ending and
+	// supplies the prompt the agent resumes from.
+	if eventName == "Stop" || eventName == "SubagentStop" {
+		if decision.Block && decision.Continuation != "" {
+			output.Decision, output.Reason = "block", decision.Continuation
+		} else if decision.Context != "" {
+			output.HookSpecificOutput = &hookSpecificOutput{HookEventName: eventName, AdditionalContext: decision.Context}
+		}
+		return json.Marshal(output)
+	}
 	if decision.Permission == "deny" {
 		reason := decision.Reason
 		if decision.Remediation != "" {
