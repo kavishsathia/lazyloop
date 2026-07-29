@@ -56,6 +56,46 @@ func (CommandVerifier) Check(ctx context.Context, workingDirectory, command stri
 	return false, fmt.Errorf("execute verifier: %w", err)
 }
 
+// Collector captures the evidence an observer is shown. It is separate from
+// Verifier because a verifier answers yes or no while evidence is the material
+// a judgement is made from.
+type Collector interface {
+	Collect(ctx context.Context, workingDirectory, command string) (string, error)
+}
+
+const maxEvidenceBytes = 64 << 10
+
+type CommandCollector struct{}
+
+func (CommandCollector) Collect(ctx context.Context, workingDirectory, command string) (string, error) {
+	process := exec.CommandContext(ctx, "sh", "-c", command)
+	process.Dir = workingDirectory
+	output, err := process.CombinedOutput()
+	if len(output) > maxEvidenceBytes {
+		output = append(output[:maxEvidenceBytes], []byte("\n[evidence truncated]")...)
+	}
+	var exitError *exec.ExitError
+	if err != nil && !errors.As(err, &exitError) {
+		return string(output), fmt.Errorf("collect evidence: %w", err)
+	}
+	return string(output), nil
+}
+
+// ReplayCollector makes judgement tests deterministic without running commands.
+type ReplayCollector struct {
+	mu      sync.Mutex
+	Outputs map[string]string
+}
+
+func (c *ReplayCollector) Collect(_ context.Context, _ string, command string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if output, ok := c.Outputs[command]; ok {
+		return output, nil
+	}
+	return "", nil
+}
+
 type VerificationResult struct {
 	Passed bool   `json:"passed"`
 	Error  string `json:"error,omitempty"`

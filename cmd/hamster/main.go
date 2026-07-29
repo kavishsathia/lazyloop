@@ -66,6 +66,16 @@ func run(ctx context.Context, arguments []string) error {
 		return killCommand(ctx, arguments[1:])
 	case "status":
 		return statusCommand(ctx, arguments[1:])
+	case "taste":
+		return tasteCommand(ctx, arguments[1:])
+	case "audits":
+		return auditsCommand(ctx, arguments[1:])
+	case "audit":
+		return auditCommand(ctx, arguments[1:])
+	case "traps":
+		return trapsCommand(ctx, arguments[1:])
+	case "resolve":
+		return resolveCommand(ctx, arguments[1:])
 	case "inspect":
 		return inspectCommand(arguments[1:])
 	case "trace":
@@ -662,6 +672,317 @@ func killCommand(ctx context.Context, arguments []string) error {
 	return printRunSummary(killed)
 }
 
+func tasteCommand(ctx context.Context, arguments []string) error {
+	if len(arguments) == 0 {
+		return errors.New("usage: hamster taste <show|record|ratify|revoke>")
+	}
+	flags := flag.NewFlagSet("taste "+arguments[0], flag.ContinueOnError)
+	name := flags.String("name", "", "clause name")
+	clause := flags.String("clause", "", "the standard, in the supervisor's words")
+	question := flags.String("question", "", "the judgement this clause answers")
+	source := flags.String("source", "", "interview, induced, or verdict")
+	drafts := flags.Bool("drafts", false, "include unratified proposals")
+	jsonOutput := flags.Bool("json", false, "print as JSON")
+	homeFlag := flags.String("home", "", "user home directory")
+	if err := flags.Parse(arguments[1:]); err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	workspace := findRepositoryRoot(cwd)
+	home, err := resolveHome(*homeFlag)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, home)
+	if err != nil {
+		return err
+	}
+
+	switch arguments[0] {
+	case "record":
+		if *name == "" || *clause == "" {
+			return errors.New("usage: hamster taste record --name NAME --clause TEXT [--question TEXT]")
+		}
+		var recorded store.TasteClause
+		if err := client.Call(ctx, requestID(), "taste.record", map[string]string{
+			"workspace_root": workspace, "name": *name, "clause": *clause,
+			"question": *question, "source": *source,
+		}, &recorded); err != nil {
+			return err
+		}
+		return printJSON(recorded)
+	case "ratify":
+		var ratified []store.TasteClause
+		if err := client.Call(ctx, requestID(), "taste.ratify", map[string]string{
+			"workspace_root": workspace, "name": *name,
+		}, &ratified); err != nil {
+			return err
+		}
+		fmt.Printf("Ratified. %d clause(s) now stand as this repository's profile.\n", len(ratified))
+		return nil
+	case "revoke":
+		if *name == "" {
+			return errors.New("usage: hamster taste revoke --name NAME")
+		}
+		var result map[string]any
+		if err := client.Call(ctx, requestID(), "taste.revoke", map[string]string{
+			"workspace_root": workspace, "name": *name,
+		}, &result); err != nil {
+			return err
+		}
+		fmt.Printf("Revoked %s.\n", *name)
+		return nil
+	case "show", "list":
+		var clauses []store.TasteClause
+		if err := client.Call(ctx, requestID(), "taste.list", map[string]any{
+			"workspace_root": workspace, "ratified_only": !*drafts,
+		}, &clauses); err != nil {
+			return err
+		}
+		if *jsonOutput {
+			return printJSON(clauses)
+		}
+		if len(clauses) == 0 {
+			fmt.Println("No taste profile yet. An agent proposes clauses with hamster taste record; you adopt them with hamster taste ratify.")
+			return nil
+		}
+		for _, entry := range clauses {
+			marker := "ratified"
+			if entry.Status == store.TasteDraft {
+				marker = "DRAFT — carries no authority until ratified"
+			}
+			fmt.Printf("%s  [%s, %s]\n", entry.Name, marker, entry.Source)
+			if entry.Question != "" {
+				fmt.Printf("  answers   %s\n", entry.Question)
+			}
+			fmt.Printf("  standard  %s\n\n", entry.Clause)
+		}
+		return nil
+	default:
+		return errors.New("usage: hamster taste <show|record|ratify|revoke>")
+	}
+}
+
+// auditsCommand lists sampled passing verdicts. Unlike the trap queue this
+// never blocks a run: it questions whether the observer judged correctly, which
+// is the only way a clause that has gone hollow becomes visible.
+func auditsCommand(ctx context.Context, arguments []string) error {
+	flags := flag.NewFlagSet("audits", flag.ContinueOnError)
+	all := flags.Bool("all", false, "include audits from every workspace")
+	jsonOutput := flags.Bool("json", false, "print as JSON")
+	homeFlag := flags.String("home", "", "user home directory")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	workspace, client, err := workspaceClient(ctx, *homeFlag, *all)
+	if err != nil {
+		return err
+	}
+	var audits []store.Judgement
+	if err := client.Call(ctx, requestID(), "audit.list", map[string]string{"workspace_root": workspace}, &audits); err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return printJSON(audits)
+	}
+	if len(audits) == 0 {
+		fmt.Println("No sampled verdicts to audit.")
+		return nil
+	}
+	for _, audit := range audits {
+		fmt.Printf("%s  %s\n", audit.ID, audit.Name)
+		fmt.Printf("  clause    %s\n", audit.Clause)
+		fmt.Printf("  verdict   %s — cited %q\n", audit.Verdict, audit.Citation)
+		if audit.Reasoning != "" {
+			fmt.Printf("  because   %s\n", audit.Reasoning)
+		}
+		for _, evidence := range audit.Evidence {
+			fmt.Printf("  saw       $ %s\n", evidence.Command)
+		}
+		fmt.Printf("  resolve   hamster audit %s --agree   (or --flag --note TEXT)\n\n", audit.ID)
+	}
+	fmt.Printf("%d sampled verdict(s) to spot-check.\n", len(audits))
+	return nil
+}
+
+func auditCommand(ctx context.Context, arguments []string) error {
+	flags := flag.NewFlagSet("audit", flag.ContinueOnError)
+	agree := flags.Bool("agree", false, "the observer judged this correctly")
+	flagIt := flags.Bool("flag", false, "the observer judged this wrongly")
+	note := flags.String("note", "", "what the clause should have said")
+	homeFlag := flags.String("home", "", "user home directory")
+	judgementID := ""
+	if len(arguments) > 0 && !strings.HasPrefix(arguments[0], "-") {
+		judgementID, arguments = arguments[0], arguments[1:]
+	}
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if judgementID == "" && flags.NArg() == 1 {
+		judgementID = flags.Arg(0)
+	}
+	if judgementID == "" || *agree == *flagIt {
+		return errors.New("usage: hamster audit JUDGEMENT_ID (--agree | --flag --note TEXT)")
+	}
+	outcome := store.AuditAgreed
+	if *flagIt {
+		outcome = store.AuditFlagged
+		if strings.TrimSpace(*note) == "" {
+			return errors.New("flagging requires --note; it becomes the proposed refinement to the clause")
+		}
+	}
+	home, err := resolveHome(*homeFlag)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, home)
+	if err != nil {
+		return err
+	}
+	var resolved store.Judgement
+	if err := client.Call(ctx, requestID(), "audit.resolve", map[string]string{
+		"judgement_id": judgementID, "outcome": outcome, "note": *note,
+	}, &resolved); err != nil {
+		return err
+	}
+	if outcome == store.AuditFlagged {
+		fmt.Printf("Flagged. Your note is now a draft refinement of %q — review it with hamster taste show --drafts.\n", resolved.Name)
+		return nil
+	}
+	fmt.Printf("Agreed with the observer on %q.\n", resolved.Name)
+	return nil
+}
+
+func workspaceClient(ctx context.Context, homeFlag string, all bool) (string, daemon.Client, error) {
+	workspace := ""
+	if !all {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", daemon.Client{}, err
+		}
+		workspace = findRepositoryRoot(cwd)
+	}
+	home, err := resolveHome(homeFlag)
+	if err != nil {
+		return "", daemon.Client{}, err
+	}
+	client, err := daemonClient(ctx, home)
+	return workspace, client, err
+}
+
+// trapsCommand prints the supervisor's review queue. It is deliberately a
+// human-facing command: the agent may read the queue through the hook, but only
+// a person outside Codex can act on it.
+func trapsCommand(ctx context.Context, arguments []string) error {
+	flags := flag.NewFlagSet("traps", flag.ContinueOnError)
+	all := flags.Bool("all", false, "include traps from every workspace")
+	jsonOutput := flags.Bool("json", false, "print the queue as JSON")
+	homeFlag := flags.String("home", "", "user home directory")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	workspace := ""
+	if !*all {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		workspace = findRepositoryRoot(cwd)
+	}
+	home, err := resolveHome(*homeFlag)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, home)
+	if err != nil {
+		return err
+	}
+	var traps []store.Trap
+	if err := client.Call(ctx, requestID(), "trap.list", map[string]string{"workspace_root": workspace}, &traps); err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return printJSON(traps)
+	}
+	if len(traps) == 0 {
+		fmt.Println("No open traps. Nothing is waiting on you.")
+		return nil
+	}
+	for _, trap := range traps {
+		fmt.Printf("%s  %s\n", trap.ID, trap.Name)
+		fmt.Printf("  run       %s at %s (iteration %d)\n", trap.RunID, trap.StateID, trap.Iteration)
+		fmt.Printf("  asked     %s\n", trap.CreatedAt.Local().Format(time.RFC1123))
+		fmt.Printf("  question  %s\n", trap.Prompt)
+		if trap.Kind == store.TrapSelection {
+			fmt.Printf("  options   %s\n", strings.Join(trap.Options, " | "))
+			fmt.Printf("  resolve   hamster resolve %s --choose %s\n", trap.ID, trap.Options[0])
+		} else {
+			fmt.Printf("  resolve   hamster resolve %s --approve   (or --reject)\n", trap.ID)
+		}
+		fmt.Println()
+	}
+	fmt.Printf("%d trap(s) waiting.\n", len(traps))
+	return nil
+}
+
+func resolveCommand(ctx context.Context, arguments []string) error {
+	flags := flag.NewFlagSet("resolve", flag.ContinueOnError)
+	approve := flags.Bool("approve", false, "approve an approval trap")
+	reject := flags.Bool("reject", false, "reject an approval trap and re-derive the work")
+	choose := flags.String("choose", "", "answer a selection trap with one declared option")
+	note := flags.String("note", "", "reasoning recorded with the verdict")
+	homeFlag := flags.String("home", "", "user home directory")
+	// The trap ID reads naturally before its verdict, which is also the form
+	// hamster traps prints, so accept it on either side of the flags.
+	trapID := ""
+	if len(arguments) > 0 && !strings.HasPrefix(arguments[0], "-") {
+		trapID, arguments = arguments[0], arguments[1:]
+	}
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if trapID == "" && flags.NArg() == 1 {
+		trapID = flags.Arg(0)
+	} else if flags.NArg() != 0 || trapID == "" {
+		return errors.New("usage: hamster resolve TRAP_ID (--approve|--reject|--choose OPTION) [--note TEXT]")
+	}
+	verdicts := 0
+	resolution := ""
+	if *approve {
+		verdicts, resolution = verdicts+1, store.TrapApprove
+	}
+	if *reject {
+		verdicts, resolution = verdicts+1, store.TrapReject
+	}
+	if *choose != "" {
+		verdicts, resolution = verdicts+1, *choose
+	}
+	if verdicts != 1 {
+		return errors.New("resolve requires exactly one of --approve, --reject, or --choose OPTION")
+	}
+	if *reject && strings.TrimSpace(*note) == "" {
+		return errors.New("rejecting a trap requires --note; the agent re-derives the work from your reasoning")
+	}
+	home, err := resolveHome(*homeFlag)
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, home)
+	if err != nil {
+		return err
+	}
+	var resolved store.Trap
+	if err := client.Call(ctx, requestID(), "trap.resolve", map[string]string{
+		"trap_id": trapID, "resolution": resolution, "note": *note,
+	}, &resolved); err != nil {
+		return err
+	}
+	return printJSON(resolved)
+}
+
 func inspectCommand(arguments []string) error {
 	flags := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	if err := flags.Parse(arguments); err != nil {
@@ -746,5 +1067,5 @@ func requestID() string {
 }
 
 func usageError() error {
-	return errors.New("usage: hamster <init|ui|man|run|signal|exec|wait|kill|status|inspect|trace|hook|daemon|version>")
+	return errors.New("usage: hamster <init|ui|man|run|signal|exec|wait|taste|traps|resolve|audits|audit|kill|status|inspect|trace|hook|daemon|version>")
 }

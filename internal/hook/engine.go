@@ -48,6 +48,13 @@ func (e *Engine) authorize(run *store.Run, event Event) Decision {
 	if run.Status == "complete" {
 		return Decision{Permission: "allow"}
 	}
+	// A trap is a synchronous transfer of control to the supervisor. Until a
+	// human answers it, the agent has no permitted action at all: allowing work
+	// to continue would make the answer arrive too late to matter.
+	if run.Status == "trapped" {
+		return deny(fmt.Sprintf("Hamster run %s is suspended at a trap and is waiting for a human decision.", run.ID),
+			"Stop working on this loop. A supervisor must run hamster traps and hamster resolve outside Codex before it can continue.")
+	}
 	if run.Status == "waiting" {
 		if isWaitTool(event.ToolName) {
 			return Decision{Permission: "allow"}
@@ -142,7 +149,7 @@ func classifyTool(event Event) string {
 	}
 	if strings.EqualFold(event.ToolName, "Bash") {
 		command := strings.TrimSpace(event.Command())
-		for _, capability := range []string{"git", "docker", "codex"} {
+		for _, capability := range []string{"git", "docker", "codex", "hamster"} {
 			if command == capability || strings.HasPrefix(command, capability+" ") {
 				return capability
 			}

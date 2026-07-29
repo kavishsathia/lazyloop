@@ -11,6 +11,8 @@ type RecoveryReport struct {
 	WaitersWoken        int64 `json:"waiters_woken"`
 	WaitsCompleted      int64 `json:"waits_completed"`
 	BindingsReleased    int64 `json:"bindings_released"`
+	TrapsCancelled      int64 `json:"traps_cancelled"`
+	TrappedRunsResumed  int64 `json:"trapped_runs_resumed"`
 }
 
 // Recover repairs transaction boundaries that intentionally span a runtime
@@ -62,6 +64,24 @@ WHERE current_run_id IN (
 		return report, fmt.Errorf("release terminal bindings: %w", err)
 	}
 	report.BindingsReleased, _ = result.RowsAffected()
+
+	// A question whose run is already dead must leave the review queue, or the
+	// supervisor spends attention on work that can never resume.
+	result, err = tx.ExecContext(ctx, `UPDATE traps SET status='resolved', resolution='cancel', resolved_at=?
+WHERE status='open' AND run_id IN (
+  SELECT id FROM runs WHERE status IN ('complete', 'killed', 'failed', 'limit_exceeded')
+)`, now)
+	if err != nil {
+		return report, fmt.Errorf("cancel orphaned traps: %w", err)
+	}
+	report.TrapsCancelled, _ = result.RowsAffected()
+
+	result, err = tx.ExecContext(ctx, `UPDATE runs SET status='running', updated_at=?
+WHERE status='trapped' AND NOT EXISTS (SELECT 1 FROM traps t WHERE t.run_id=runs.id AND t.status='open')`, now)
+	if err != nil {
+		return report, fmt.Errorf("resume resolved traps: %w", err)
+	}
+	report.TrappedRunsResumed, _ = result.RowsAffected()
 
 	if err := tx.Commit(); err != nil {
 		return report, err

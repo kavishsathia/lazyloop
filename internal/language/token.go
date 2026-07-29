@@ -32,6 +32,8 @@ const (
 	TokenForeach    TokenKind = "foreach"
 	TokenStep       TokenKind = "step"
 	TokenVerify     TokenKind = "verify"
+	TokenTrap       TokenKind = "trap"
+	TokenJudge      TokenKind = "judge"
 	TokenLimit      TokenKind = "limit"
 	TokenReturn     TokenKind = "return"
 	TokenAllow      TokenKind = "allow"
@@ -78,6 +80,8 @@ var keywords = map[string]TokenKind{
 	"foreach":  TokenForeach,
 	"step":     TokenStep,
 	"verify":   TokenVerify,
+	"trap":     TokenTrap,
+	"judge":    TokenJudge,
 	"limit":    TokenLimit,
 	"return":   TokenReturn,
 	"allow":    TokenAllow,

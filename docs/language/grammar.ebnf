@@ -4,13 +4,15 @@ goal           = "goal" "{" { goal-statement } "}" [ "with" flow ] ;
 flow           = "flow" "{" flow-statement { flow-statement } "}" ;
 foreach        = "foreach" identifier "in" expression
                  "{" loop "}" ;
-goal-statement = verify | limit | policy | return ;
-flow-statement = step | if | exec | wait ;
+goal-statement = verify | trap | limit | policy | return ;
+flow-statement = step | if | exec | wait | trap | judge ;
 step           = "step" identifier "=" ( expression | loop | fork ) ";" ;
 fork           = "fork" ;
 if             = "if" expression "{" { flow-statement } "}" ;
 exec           = "exec" ( identifier | string ) ";" ;
 wait           = "wait" expression ";" ;
+trap           = "trap" identifier "=" expression ";" ;
+judge          = "judge" identifier "=" expression ";" ;
 verify         = "verify" identifier "=" expression ";" ;
 limit          = "limit" identifier expression ";" ;
 policy         = ( "allow" | "disallow" ) expression ";" ;

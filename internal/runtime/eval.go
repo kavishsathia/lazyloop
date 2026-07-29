@@ -16,6 +16,11 @@ type Environment map[string]any
 type Evaluator struct {
 	WorkingDirectory string
 	Verifier         Verifier
+	RunID            string
+	// Observed reports whether this run has recorded a verdict. It is what
+	// makes "the observer must speak" a machine-checked postcondition rather
+	// than an instruction the observer could ignore.
+	Observed func(ctx context.Context, observerRunID string) (bool, error)
 }
 
 func (e Evaluator) Evaluate(ctx context.Context, expression ir.Expression, environment Environment) (any, error) {
@@ -89,6 +94,14 @@ func (e Evaluator) call(ctx context.Context, expression ir.Expression, environme
 		arguments = append(arguments, value)
 	}
 	switch path {
+	case "judge.recorded":
+		if len(arguments) != 0 {
+			return nil, errors.New("judge.recorded takes no arguments")
+		}
+		if e.Observed == nil || e.RunID == "" {
+			return nil, errors.New("judge.recorded is only meaningful inside an observer run")
+		}
+		return e.Observed(ctx, e.RunID)
 	case "bash.check":
 		if len(arguments) != 1 {
 			return nil, errors.New("bash.check expects one command")

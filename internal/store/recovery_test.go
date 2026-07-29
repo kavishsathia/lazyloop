@@ -61,7 +61,8 @@ func TestOpenRecoversTerminalBindingsWaitersAndPendingForks(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload, _ := json.Marshal(report)
-	if string(payload) != `{"pending_forks_rebuilt":0,"waiters_woken":0,"waits_completed":0,"bindings_released":0}` {
+	quiescent, _ := json.Marshal(RecoveryReport{})
+	if string(payload) != string(quiescent) {
 		t.Fatalf("second recovery was not idempotent: %s", payload)
 	}
 }

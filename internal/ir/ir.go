@@ -46,6 +46,9 @@ const (
 	StateWait      StateKind = "wait"
 	StateNested    StateKind = "nested"
 	StateVerify    StateKind = "verify"
+	StateTrap      StateKind = "trap"
+	StateJudge     StateKind = "judge"
+	StateVerdict   StateKind = "verdict"
 	StateLimit     StateKind = "limit"
 	StatePolicy    StateKind = "policy"
 	StateSequence  StateKind = "sequence"
@@ -63,19 +66,29 @@ const (
 )
 
 type State struct {
-	ID         string        `json:"id"`
-	Kind       StateKind     `json:"kind"`
-	Executor   Executor      `json:"executor"`
-	Name       string        `json:"name,omitempty"`
-	Script     string        `json:"script,omitempty"`
-	Expression *Expression   `json:"expression,omitempty"`
-	Nested     *Machine      `json:"nested,omitempty"`
-	Limit      *Limit        `json:"limit,omitempty"`
-	Policy     *Policy       `json:"policy,omitempty"`
-	Next       string        `json:"next,omitempty"`
-	OnSuccess  string        `json:"on_success,omitempty"`
-	OnFailure  string        `json:"on_failure,omitempty"`
-	Span       language.Span `json:"span"`
+	ID         string      `json:"id"`
+	Kind       StateKind   `json:"kind"`
+	Executor   Executor    `json:"executor"`
+	Name       string      `json:"name,omitempty"`
+	Script     string      `json:"script,omitempty"`
+	Expression *Expression `json:"expression,omitempty"`
+	Nested     *Machine    `json:"nested,omitempty"`
+	Limit      *Limit      `json:"limit,omitempty"`
+	Policy     *Policy     `json:"policy,omitempty"`
+	Trap       *Trap       `json:"trap,omitempty"`
+	Judge      *Judge      `json:"judge,omitempty"`
+	// Machine carries an exec target the compiler synthesized, so an observer
+	// does not have to exist as a script on disk.
+	Machine  *Machine `json:"machine,omitempty"`
+	JudgeRef string   `json:"judge_ref,omitempty"`
+	// Conditional marks a gate that sits on a branch rather than on every path.
+	// Not reaching it is normal, so the iteration boundary must not read its
+	// absence as a failure.
+	Conditional bool          `json:"conditional,omitempty"`
+	Next        string        `json:"next,omitempty"`
+	OnSuccess   string        `json:"on_success,omitempty"`
+	OnFailure   string        `json:"on_failure,omitempty"`
+	Span        language.Span `json:"span"`
 }
 
 type Limit struct {
@@ -86,6 +99,36 @@ type Limit struct {
 type Policy struct {
 	Allow bool       `json:"allow"`
 	Value Expression `json:"value"`
+}
+
+const (
+	TrapApproval  = "approval"
+	TrapSelection = "selection"
+)
+
+type Trap struct {
+	Kind    string       `json:"kind"`
+	Prompt  Expression   `json:"prompt"`
+	Options []Expression `json:"options,omitempty"`
+	// Clause names the taste this trap is standing in for. Resolving it writes
+	// the supervisor's reasoning back as a proposed refinement.
+	Clause string `json:"clause,omitempty"`
+}
+
+// Judge names a ratified taste clause and the evidence an observer is allowed
+// to see. Evidence is gathered by the parent, never by the observer, so the
+// observer cannot choose what to look at.
+type Judge struct {
+	Clause   string       `json:"clause"`
+	Evidence []Expression `json:"evidence,omitempty"`
+	Escalate string       `json:"escalate,omitempty"`
+	// EscalateAfter bounds how many times the same clause may fail before the
+	// question goes to a human. Not every taste failure is one the agent can
+	// perceive, so looping forever wastes attempts on work it cannot fix.
+	EscalateAfter int `json:"escalate_after,omitempty"`
+	// AuditRate samples one in N passing verdicts for human spot-checking. It
+	// is how a rubric that has gone hollow becomes visible.
+	AuditRate int `json:"audit_rate,omitempty"`
 }
 
 type ExpressionKind string

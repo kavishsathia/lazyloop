@@ -74,12 +74,12 @@ func (c *compiler) compileGoal(machine *ir.Machine, goal *language.Goal) {
 		}
 		c.compileFlowStatements(machine, goal.Flow.Statements)
 	}
-	verificationCount := 0
+	gateCount := 0
 	returnCount := 0
 	for _, statement := range goal.Statements {
 		switch node := statement.(type) {
 		case *language.Verify:
-			verificationCount++
+			gateCount++
 			expression := c.compileExpression(node.Check)
 			machine.States = append(machine.States, ir.State{Kind: ir.StateVerify, Executor: ir.ExecutorRuntime, Name: node.Name, Expression: &expression, Span: node.Span})
 		case *language.Return:
@@ -91,9 +91,25 @@ func (c *compiler) compileGoal(machine *ir.Machine, goal *language.Goal) {
 			}
 		}
 	}
+	// Traps are emitted after every verifier regardless of source order. The
+	// ladder stops at its first failure, so a human is only ever asked about
+	// work the machine has already accepted — the scarcest resource is spent
+	// last.
+	for _, statement := range goal.Statements {
+		if node, ok := statement.(*language.Trap); ok {
+			gateCount++
+			trap := c.compileTrap(node)
+			machine.States = append(machine.States, ir.State{Kind: ir.StateTrap, Executor: ir.ExecutorControl, Name: node.Name, Trap: trap, Span: node.Span})
+		}
+	}
 
-	if verificationCount == 0 {
-		c.error(machine.Span, "goal must contain at least one verification")
+	// A goal needs a gate, but not necessarily a machine-checkable one. Work
+	// whose only standard of completion is a person's judgement — a piece of
+	// writing, a design call — is gated entirely by traps, and demanding a
+	// token verifier there would only dress a subjective goal up as an
+	// objective one.
+	if gateCount == 0 {
+		c.error(machine.Span, "goal must contain at least one gate: a verify Hamster can check or a trap a human answers")
 	}
 	c.appendLoopTerminalStates(machine)
 }
@@ -132,7 +148,279 @@ func (c *compiler) compileFlowStatements(machine *ir.Machine, statements []langu
 			c.validateWaitTarget(node)
 			expression := c.compileExpression(node.Target)
 			machine.States = append(machine.States, ir.State{Kind: ir.StateWait, Executor: ir.ExecutorRuntime, Name: "wait", Expression: &expression, Span: node.Span})
+		case *language.Trap:
+			trap := c.compileTrap(node)
+			machine.States = append(machine.States, ir.State{Kind: ir.StateTrap, Executor: ir.ExecutorControl, Name: node.Name, Trap: trap, Span: node.Span})
+		case *language.Judge:
+			c.compileJudge(machine, node)
 		}
+	}
+}
+
+// compileTrap lowers a supervisor request. Hamster cannot compute a trap's
+// answer, so the compiler's whole job is to guarantee the emitted state is
+// answerable: a known request form, a static prompt, and — for a selection — a
+// closed set of options the supervisor can actually choose between.
+func (c *compiler) compileTrap(trap *language.Trap) *ir.Trap {
+	call, ok := trap.Request.(*language.Call)
+	if !ok {
+		c.error(trap.Span, "trap requires user.approve(PROMPT) or user.select(PROMPT, options: [...])")
+		return &ir.Trap{Kind: ir.TrapApproval}
+	}
+	path := callPath(call.Callee)
+	result := &ir.Trap{}
+	switch path {
+	case "user.approve":
+		result.Kind = ir.TrapApproval
+	case "user.select":
+		result.Kind = ir.TrapSelection
+	default:
+		c.error(trap.Span, fmt.Sprintf("trap cannot request %q; supported requests are user.approve and user.select", path))
+		return &ir.Trap{Kind: ir.TrapApproval}
+	}
+
+	var options *language.CallArgument
+	var prompt language.Expr
+	for index := range call.Arguments {
+		argument := call.Arguments[index]
+		switch argument.Name {
+		case "":
+			if prompt != nil {
+				c.error(argument.Span, path+" accepts one prompt")
+				continue
+			}
+			prompt = argument.Value
+		case "options":
+			if result.Kind != ir.TrapSelection {
+				c.error(argument.Span, "options may only be supplied to user.select")
+				continue
+			}
+			options = &call.Arguments[index]
+		default:
+			c.error(argument.Span, fmt.Sprintf("%s does not accept argument %q", path, argument.Name))
+		}
+	}
+
+	if prompt == nil {
+		c.error(trap.Span, path+" requires a prompt")
+		return result
+	}
+	literal, ok := prompt.(*language.Literal)
+	if !ok || literal.Kind != "string" || strings.TrimSpace(literal.Value) == "" {
+		c.error(prompt.NodeSpan(), "trap prompt must be a non-empty string literal so it can be reviewed before the run starts")
+		return result
+	}
+	result.Prompt = c.compileExpression(prompt)
+
+	if result.Kind == ir.TrapSelection {
+		if options == nil {
+			c.error(trap.Span, "user.select requires options: [...]")
+			return result
+		}
+		list, ok := options.Value.(*language.List)
+		if !ok || len(list.Values) < 2 {
+			c.error(options.Span, "user.select requires a static list of at least two options")
+			return result
+		}
+		for _, value := range list.Values {
+			result.Options = append(result.Options, c.compileExpression(value))
+		}
+	}
+	return result
+}
+
+// compileJudge desugars a subjective check into process primitives. There is no
+// judge instruction in the runtime: a judge is a fork into a constrained
+// observer, an exec that clears the working agent's context, a wait, and a
+// verdict dispatch. That is what buys the observer a fresh context and an
+// allow-list it cannot escape, rather than a prompt asking it to behave.
+func (c *compiler) compileJudge(machine *ir.Machine, judge *language.Judge) {
+	evidence, options, ok := c.compileJudgeRequest(judge)
+	if !ok {
+		return
+	}
+	handle := "__judge_" + judge.Name
+	prepareIndex := len(machine.States)
+	forkIndex := prepareIndex + 1
+	branchIndex := forkIndex + 1
+	execIndex := branchIndex + 1
+	waitIndex := execIndex + 1
+	verdictIndex := waitIndex + 1
+	_ = verdictIndex
+	escalateIndex := verdictIndex + 1
+
+	observer := c.observerMachine(judge)
+	childCondition := ir.Expression{
+		Kind: ir.ExpressionMember, Name: "child", Span: judge.Span,
+		Receiver: &ir.Expression{Kind: ir.ExpressionIdentifier, Name: handle, Span: judge.Span},
+	}
+	handleReference := ir.Expression{Kind: ir.ExpressionIdentifier, Name: handle, Span: judge.Span}
+
+	machine.States = append(machine.States,
+		ir.State{
+			Kind: ir.StateJudge, Executor: ir.ExecutorRuntime, Name: judge.Name, Span: judge.Span,
+			Judge: &ir.Judge{Clause: judge.Name, Evidence: evidence, Escalate: stateTarget(escalateIndex),
+				EscalateAfter: options.escalateAfter, AuditRate: options.auditRate},
+		},
+		ir.State{Kind: ir.StateFork, Executor: ir.ExecutorAgent, Name: handle, Span: judge.Span},
+		ir.State{Kind: ir.StateBranch, Executor: ir.ExecutorControl, Name: "if", Expression: &childCondition, Span: judge.Span,
+			OnSuccess: stateTarget(execIndex), OnFailure: stateTarget(waitIndex)},
+		ir.State{Kind: ir.StateExec, Executor: ir.ExecutorRuntime, Name: "exec", Span: judge.Span,
+			Machine: observer, JudgeRef: stateTarget(prepareIndex), Next: stateTarget(waitIndex)},
+		ir.State{Kind: ir.StateWait, Executor: ir.ExecutorRuntime, Name: "wait", Expression: &handleReference, Span: judge.Span},
+		ir.State{Kind: ir.StateVerdict, Executor: ir.ExecutorRuntime, Name: judge.Name, Span: judge.Span,
+			Next: stateTarget(escalateIndex + 1), JudgeRef: stateTarget(prepareIndex),
+			Judge: &ir.Judge{Clause: judge.Name, Escalate: stateTarget(escalateIndex),
+				EscalateAfter: options.escalateAfter, AuditRate: options.auditRate}},
+		// An observer that cannot decide does not get to invent an answer. It
+		// abstains, and abstention is a transfer of control to the supervisor.
+		ir.State{Kind: ir.StateTrap, Executor: ir.ExecutorControl, Name: judge.Name + "_escalated", Span: judge.Span,
+			Conditional: true,
+			Trap: &ir.Trap{Kind: ir.TrapApproval, Clause: judge.Name, Prompt: ir.Expression{
+				Kind: ir.ExpressionLiteral, ValueKind: "string", Span: judge.Span,
+				Value: "The observer could not decide \"" + judge.Name + "\" from the ratified taste profile. Approve this work?",
+			}},
+		},
+	)
+}
+
+type judgeOptions struct {
+	escalateAfter int
+	auditRate     int
+}
+
+func (c *compiler) compileJudgeRequest(judge *language.Judge) ([]ir.Expression, judgeOptions, bool) {
+	// An observer that fails the same clause repeatedly is reporting that the
+	// agent cannot perceive the problem, which is a human's call rather than
+	// something to retry until the attempt budget runs out.
+	options := judgeOptions{escalateAfter: defaultEscalateAfter}
+	call, ok := judge.Request.(*language.Call)
+	if !ok || callPath(call.Callee) != "taste.check" {
+		c.error(judge.Span, "judge requires taste.check(EVIDENCE); an observer applies a ratified clause and has no standard of its own")
+		return nil, options, false
+	}
+	var evidenceArgument *language.CallArgument
+	for index := range call.Arguments {
+		argument := call.Arguments[index]
+		switch argument.Name {
+		case "":
+			if evidenceArgument != nil {
+				c.error(argument.Span, "taste.check accepts one evidence argument")
+				return nil, options, false
+			}
+			evidenceArgument = &call.Arguments[index]
+		case "escalate_after":
+			value, ok := c.positiveInteger(argument, "escalate_after")
+			if !ok {
+				return nil, options, false
+			}
+			options.escalateAfter = value
+		case "audit":
+			value, ok := c.positiveInteger(argument, "audit")
+			if !ok {
+				return nil, options, false
+			}
+			options.auditRate = value
+		default:
+			c.error(argument.Span, fmt.Sprintf("taste.check does not accept argument %q", argument.Name))
+			return nil, options, false
+		}
+	}
+	if evidenceArgument == nil {
+		c.error(judge.Span, "taste.check accepts one evidence argument")
+		return nil, options, false
+	}
+	var sources []language.Expr
+	switch value := evidenceArgument.Value.(type) {
+	case *language.Literal:
+		sources = []language.Expr{value}
+	case *language.List:
+		if len(value.Values) == 0 {
+			c.error(value.Span, "taste.check requires at least one evidence command")
+			return nil, options, false
+		}
+		sources = value.Values
+	default:
+		c.error(evidenceArgument.Span, "taste.check evidence must be a static command or list of commands")
+		return nil, options, false
+	}
+	evidence := make([]ir.Expression, 0, len(sources))
+	for _, source := range sources {
+		literal, ok := source.(*language.Literal)
+		// Evidence is gathered by the parent from statically declared commands.
+		// A computed command would let the work under review choose what the
+		// observer is allowed to see.
+		if !ok || literal.Kind != "string" || strings.TrimSpace(literal.Value) == "" {
+			c.error(source.NodeSpan(), "evidence must be a non-empty string literal so it is reviewable before the run starts")
+			return nil, options, false
+		}
+		evidence = append(evidence, c.compileExpression(source))
+	}
+	return evidence, options, true
+}
+
+const defaultEscalateAfter = 3
+
+func (c *compiler) positiveInteger(argument language.CallArgument, name string) (int, bool) {
+	literal, ok := argument.Value.(*language.Literal)
+	if !ok || literal.Kind != "number" {
+		c.error(argument.Span, name+" requires a positive integer literal")
+		return 0, false
+	}
+	value, err := strconv.Atoi(strings.ReplaceAll(literal.Value, "_", ""))
+	if err != nil || value <= 0 {
+		c.error(argument.Span, name+" requires a positive integer literal")
+		return 0, false
+	}
+	return value, true
+}
+
+// observerMachine synthesizes the program the observer subagent runs. Its
+// allow-list is the enforcement: the observer may run Hamster commands and
+// nothing else, so it can read the profile and the evidence and record a
+// verdict, but it structurally cannot edit code or run the test suite.
+func (c *compiler) observerMachine(judge *language.Judge) *ir.Machine {
+	machine := &ir.Machine{
+		ID: fmt.Sprintf("machine_%d", c.nextMachine), Kind: ir.LoopGoal,
+		Name: "observer:" + judge.Name, Span: judge.Span,
+	}
+	c.nextMachine++
+	literal := func(value string) ir.Expression {
+		return ir.Expression{Kind: ir.ExpressionLiteral, ValueKind: "string", Value: value, Span: judge.Span}
+	}
+	recorded := ir.Expression{
+		Kind: ir.ExpressionCall, Span: judge.Span,
+		Callee: &ir.Expression{
+			Kind: ir.ExpressionMember, Name: "recorded", Span: judge.Span,
+			Receiver: &ir.Expression{Kind: ir.ExpressionIdentifier, Name: "judge", Span: judge.Span},
+		},
+	}
+	machine.States = []ir.State{
+		// Time is the only bound that matters here. An observer that never
+		// speaks must not hang the parent, and its silence becomes an
+		// abstention rather than a guess.
+		{Kind: ir.StateLimit, Executor: ir.ExecutorControl, Name: "time",
+			Limit: &ir.Limit{Kind: "time", Value: literal(observerDeadline)}, Span: judge.Span},
+		{Kind: ir.StatePolicy, Executor: ir.ExecutorControl, Name: "allow",
+			Policy: &ir.Policy{Allow: true, Value: ir.Expression{Kind: ir.ExpressionIdentifier, Name: "hamster", Span: judge.Span}}, Span: judge.Span},
+		{Kind: ir.StateAgentWork, Executor: ir.ExecutorAgent, Name: "observe", Span: judge.Span},
+		{Kind: ir.StateVerify, Executor: ir.ExecutorRuntime, Name: "spoke", Expression: &recorded, Span: judge.Span},
+	}
+	machine.Return = &ir.Expression{Kind: ir.ExpressionIdentifier, Name: "spoke", Span: judge.Span}
+	c.appendLoopTerminalStates(machine)
+	return machine
+}
+
+const observerDeadline = "15m"
+
+func callPath(expression language.Expr) string {
+	switch node := expression.(type) {
+	case *language.Identifier:
+		return node.Name
+	case *language.Member:
+		return callPath(node.Receiver) + "." + node.Name
+	default:
+		return ""
 	}
 }
 
@@ -180,8 +468,18 @@ func (c *compiler) validateLimit(limit *language.Limit) {
 		if err != nil || value <= 0 {
 			c.error(limit.Span, "limit time requires a positive duration such as 30m")
 		}
+	case "traps":
+		value, err := strconv.Atoi(strings.ReplaceAll(literal.Value, "_", ""))
+		if err != nil || value <= 0 {
+			c.error(limit.Span, "limit traps requires a positive integer")
+		}
+	case "judgements":
+		value, err := strconv.Atoi(strings.ReplaceAll(literal.Value, "_", ""))
+		if err != nil || value <= 0 {
+			c.error(limit.Span, "limit judgements requires a positive integer")
+		}
 	default:
-		c.error(limit.Span, fmt.Sprintf("limit kind %q is not enforceable by this runtime; supported kinds are attempts and time", limit.Kind))
+		c.error(limit.Span, fmt.Sprintf("limit kind %q is not enforceable by this runtime; supported kinds are attempts, time, traps, and judgements", limit.Kind))
 	}
 }
 
@@ -197,7 +495,10 @@ func (c *compiler) appendLoopTerminalStates(machine *ir.Machine) {
 	boundary.OnSuccess = machine.States[boundaryIndex+1].ID
 	boundary.OnFailure = machine.InitialState
 	for index := range machine.States {
-		if machine.States[index].Kind == ir.StateVerify {
+		// A rejected trap re-derives the work the same way a failed verifier
+		// does, so the supervisor's verdict costs a re-run and never a rewrite.
+		switch machine.States[index].Kind {
+		case ir.StateVerify, ir.StateTrap, ir.StateVerdict:
 			machine.States[index].OnFailure = machine.InitialState
 		}
 	}
@@ -226,8 +527,14 @@ func (c *compiler) assignStateIDs(machine *ir.Machine) {
 		}
 	}
 	for index := range machine.States {
-		machine.States[index].OnSuccess = resolveStateTarget(machine, machine.States[index].OnSuccess)
-		machine.States[index].OnFailure = resolveStateTarget(machine, machine.States[index].OnFailure)
+		state := &machine.States[index]
+		state.Next = resolveStateTarget(machine, state.Next)
+		state.OnSuccess = resolveStateTarget(machine, state.OnSuccess)
+		state.OnFailure = resolveStateTarget(machine, state.OnFailure)
+		state.JudgeRef = resolveStateTarget(machine, state.JudgeRef)
+		if state.Judge != nil {
+			state.Judge.Escalate = resolveStateTarget(machine, state.Judge.Escalate)
+		}
 	}
 }
 

@@ -245,6 +245,89 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 		if err = json.Unmarshal(request.Params, &params); err == nil {
 			result, err = s.store.ReturnRun(ctx, params.RunID, params.Value)
 		}
+	case "trap.list":
+		var params struct {
+			WorkspaceRoot string `json:"workspace_root,omitempty"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.ListOpenTraps(ctx, params.WorkspaceRoot)
+		}
+	case "trap.resolve":
+		var params struct {
+			TrapID     string `json:"trap_id"`
+			Resolution string `json:"resolution"`
+			Note       string `json:"note,omitempty"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			var resolved *store.Trap
+			resolved, err = s.store.ResolveTrap(ctx, params.TrapID, params.Resolution, params.Note)
+			if err == nil {
+				// Resolving is what makes the run runnable again, so the
+				// daemon immediately pumps it rather than waiting for the
+				// agent's next tool call.
+				if _, startErr := s.runner.Start(ctx, resolved.RunID); startErr != nil {
+					err = startErr
+				} else {
+					result, err = s.store.GetTrap(ctx, resolved.ID)
+				}
+			}
+		}
+	case "audit.list":
+		var params struct {
+			WorkspaceRoot string `json:"workspace_root,omitempty"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.ListAudits(ctx, params.WorkspaceRoot)
+		}
+	case "audit.resolve":
+		var params struct {
+			JudgementID string `json:"judgement_id"`
+			Outcome     string `json:"outcome"`
+			Note        string `json:"note,omitempty"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.ResolveAudit(ctx, params.JudgementID, params.Outcome, params.Note)
+		}
+	case "taste.record":
+		var params struct {
+			WorkspaceRoot string `json:"workspace_root"`
+			Name          string `json:"name"`
+			Question      string `json:"question,omitempty"`
+			Clause        string `json:"clause"`
+			Source        string `json:"source,omitempty"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.RecordTaste(ctx, store.RecordTasteParams{
+				WorkspaceRoot: params.WorkspaceRoot, Name: params.Name,
+				Question: params.Question, Clause: params.Clause, Source: params.Source,
+			})
+		}
+	case "taste.ratify":
+		var params struct {
+			WorkspaceRoot string `json:"workspace_root"`
+			Name          string `json:"name,omitempty"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.RatifyTaste(ctx, params.WorkspaceRoot, params.Name)
+		}
+	case "taste.revoke":
+		var params struct {
+			WorkspaceRoot string `json:"workspace_root"`
+			Name          string `json:"name"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			if err = s.store.RevokeTaste(ctx, params.WorkspaceRoot, params.Name); err == nil {
+				result = map[string]any{"revoked": params.Name}
+			}
+		}
+	case "taste.list":
+		var params struct {
+			WorkspaceRoot string `json:"workspace_root,omitempty"`
+			RatifiedOnly  bool   `json:"ratified_only"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.ListTaste(ctx, params.WorkspaceRoot, params.RatifiedOnly)
+		}
 	case "trace.start":
 		var params struct {
 			Name              string `json:"name"`
@@ -306,6 +389,11 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 				result, err = control.RegisterFromHook(ctx, s.store, s.runner, params.Event, command)
 			} else if isControl {
 				result = hook.Decision{Permission: "allow"}
+			} else if params.Event.EventName == "PreToolUse" && control.Invokes(params.Event.Command()) {
+				// Parse only recognizes a Hamster command that is the whole tool
+				// call. Anything else that still invokes the CLI would reach the
+				// daemon without ever passing the authority check.
+				result = control.DenyDisguisedInvocation()
 			} else if params.Event.EventName == "PostToolUse" {
 				if isSpawnTool(params.Event.ToolName) {
 					var child *store.Run

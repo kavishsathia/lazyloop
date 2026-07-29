@@ -151,6 +151,63 @@ CREATE TABLE IF NOT EXISTS pending_forks (
 
 CREATE INDEX IF NOT EXISTS pending_forks_session ON pending_forks(session_id, status, created_at);
 
+CREATE TABLE IF NOT EXISTS traps (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  state_id TEXT NOT NULL,
+  iteration INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  options_json BLOB NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL,
+  resolution TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  clause TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS traps_occurrence ON traps(run_id, state_id, iteration);
+CREATE INDEX IF NOT EXISTS traps_open ON traps(status, created_at);
+
+CREATE TABLE IF NOT EXISTS judgements (
+  id TEXT PRIMARY KEY,
+  parent_run_id TEXT NOT NULL REFERENCES runs(id),
+  state_id TEXT NOT NULL,
+  iteration INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  question TEXT NOT NULL DEFAULT '',
+  clause TEXT NOT NULL,
+  evidence_json BLOB NOT NULL DEFAULT '[]',
+  observer_run_id TEXT,
+  verdict TEXT NOT NULL DEFAULT '',
+  citation TEXT NOT NULL DEFAULT '',
+  reasoning TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  audit TEXT NOT NULL DEFAULT '',
+  audit_note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  recorded_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS judgements_occurrence ON judgements(parent_run_id, state_id, iteration);
+CREATE UNIQUE INDEX IF NOT EXISTS judgements_observer ON judgements(observer_run_id) WHERE observer_run_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS taste_clauses (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  name TEXT NOT NULL,
+  question TEXT NOT NULL DEFAULT '',
+  clause TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'interview',
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  ratified_at TEXT,
+  UNIQUE(workspace_id, name, status)
+);
+
 CREATE TABLE IF NOT EXISTS traces (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -200,7 +257,7 @@ CREATE INDEX IF NOT EXISTS trace_events_trace_id ON trace_events(trace_id, seque
 	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS unique_run_fork_key ON runs(fork_key) WHERE fork_key <> ''`); err != nil {
 		return fmt.Errorf("create fork key index: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 7`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET version = 10`); err != nil {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	return nil
@@ -379,8 +436,11 @@ WHERE s.codex_session_id = ? AND p.agent_id = ?`, codexSessionID, agentID).Scan(
 		return nil, err
 	}
 	now := formatTime(time.Now().UTC())
-	if status == "running" {
-		result, updateErr := tx.ExecContext(ctx, `UPDATE runs SET status='killed', termination_reason=?, updated_at=? WHERE id=? AND status='running'`, reason, now, runID)
+	// The brake must work on any live run, not only a running one. A run
+	// suspended at a trap or a wait is exactly the case where an operator most
+	// needs to break out, so kill terminates every non-terminal status.
+	if !terminalProcessStatus(status) {
+		result, updateErr := tx.ExecContext(ctx, `UPDATE runs SET status='killed', termination_reason=?, updated_at=? WHERE id=? AND status=?`, reason, now, runID, status)
 		if updateErr != nil {
 			return nil, updateErr
 		}
@@ -390,6 +450,11 @@ WHERE s.codex_session_id = ? AND p.agent_id = ?`, codexSessionID, agentID).Scan(
 		}
 		if changed != 1 {
 			return nil, errors.New("run changed concurrently")
+		}
+		// A dead run's questions must leave the review queue immediately;
+		// otherwise the supervisor spends attention on work that cannot resume.
+		if _, updateErr := tx.ExecContext(ctx, `UPDATE traps SET status='resolved', resolution='cancel', resolved_at=? WHERE run_id=? AND status='open'`, now, runID); updateErr != nil {
+			return nil, updateErr
 		}
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE processes SET current_run_id=NULL, updated_at=? WHERE current_run_id=?`, now, runID)

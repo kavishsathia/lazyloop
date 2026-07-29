@@ -21,6 +21,7 @@ type Runner struct {
 	locks        sync.Map
 	clock        Clock
 	verifier     Verifier
+	collector    Collector
 	obsMu        sync.Mutex
 	observations map[string][]VerificationObservation
 	execResolver func(script, workspace string) (ir.Machine, error)
@@ -34,6 +35,14 @@ func (r *Runner) SetExecResolver(resolver func(script, workspace string) (ir.Mac
 	r.execResolver = resolver
 }
 
+// SetCollector replaces evidence gathering, which lets judgement tests run
+// without executing captured commands.
+func (r *Runner) SetCollector(collector Collector) {
+	if collector != nil {
+		r.collector = collector
+	}
+}
+
 func NewWithDependencies(state *store.Store, clock Clock, verifier Verifier) *Runner {
 	if clock == nil {
 		clock = RealClock{}
@@ -41,7 +50,7 @@ func NewWithDependencies(state *store.Store, clock Clock, verifier Verifier) *Ru
 	if verifier == nil {
 		verifier = CommandVerifier{}
 	}
-	return &Runner{store: state, clock: clock, verifier: verifier, observations: map[string][]VerificationObservation{}}
+	return &Runner{store: state, clock: clock, verifier: verifier, collector: CommandCollector{}, observations: map[string][]VerificationObservation{}}
 }
 
 func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decision, error) {
@@ -112,7 +121,7 @@ func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decisio
 	run.Variables, _ = json.Marshal(environment)
 	observations := r.observationsAfter(run.ID, observationOffset)
 	decision := hook.Decision{Permission: "allow", Tracked: true, RunID: run.ID}
-	if len(observations) > 0 || terminalStatus(run.Status) {
+	if len(observations) > 0 || terminalStatus(run.Status) || run.Status == store.TrapStatusID {
 		decision = signalDecision(run, observations)
 	}
 	payload := event.Raw
@@ -131,6 +140,48 @@ func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decisio
 		}
 	}
 	return decision, err
+}
+
+// AdvanceAgentWork moves a run past its current agent-work state and pumps.
+// Control commands never produce a PostToolUse probe, so an agent whose whole
+// job is a control command — an observer recording its verdict — needs an
+// explicit way to finish, or its parent would wait on it forever.
+func (r *Runner) AdvanceAgentWork(ctx context.Context, runID string) (*store.Run, error) {
+	lock := r.runLock(runID)
+	lock.Lock()
+	defer lock.Unlock()
+	run, err := r.store.GetRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	state, ok := currentState(run)
+	if !ok || state.Kind != ir.StateAgentWork {
+		return run, nil
+	}
+	expected := run.StateID
+	environment, err := decodeEnvironment(run.Variables)
+	if err != nil {
+		return nil, err
+	}
+	run.StateID = state.Next
+	if err := r.pump(ctx, run, environment); err != nil {
+		return nil, err
+	}
+	run.Variables, _ = json.Marshal(environment)
+	if err := r.store.UpdateRun(ctx, expected, run); err != nil {
+		return nil, err
+	}
+	if terminalStatus(run.Status) {
+		if err := r.store.FinalizeRun(ctx, run.ID); err != nil {
+			return nil, err
+		}
+		if run.ParentRunID != "" {
+			if _, err := r.Start(ctx, run.ParentRunID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return run, nil
 }
 
 func (r *Runner) ResumeForkChild(ctx context.Context, runID string) (*store.Run, error) {
@@ -254,6 +305,10 @@ func signalDecision(run *store.Run, observations []VerificationObservation) hook
 		decision.Context = fmt.Sprintf("Hamster independently verified run %s and completed it with result %s.", run.ID, string(run.Result))
 		return decision
 	}
+	if run.Status == store.TrapStatusID {
+		decision.Context = fmt.Sprintf("Hamster suspended run %s at a trap and is waiting for the supervisor. Stop working on this loop; the run resumes only when a human resolves the request with hamster resolve.", run.ID)
+		return decision
+	}
 	if run.Status != "running" {
 		decision.Context = fmt.Sprintf("Hamster verification terminated run %s with status %s and result %s. Escalate or use the kill switch before continuing outside this loop.", run.ID, run.Status, string(run.Result))
 		return decision
@@ -346,12 +401,25 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 				run.StateID = state.OnFailure
 			}
 		case ir.StateExec:
-			if r.execResolver == nil {
-				return errors.New("runtime exec resolver is unavailable")
-			}
-			machine, err := r.execResolver(state.Script, run.WorkspaceRoot)
-			if err != nil {
-				return fmt.Errorf("exec %s: %w", state.Script, err)
+			var machine ir.Machine
+			if state.Machine != nil {
+				// A synthesized observer has no script on disk; the compiler
+				// emitted the program the child is about to become.
+				machine = *state.Machine
+				if state.JudgeRef != "" {
+					if err := r.store.BindObserver(ctx, run.ParentRunID, state.JudgeRef, run.Iteration, run.ID); err != nil {
+						return fmt.Errorf("bind observer: %w", err)
+					}
+				}
+			} else {
+				if r.execResolver == nil {
+					return errors.New("runtime exec resolver is unavailable")
+				}
+				resolved, err := r.execResolver(state.Script, run.WorkspaceRoot)
+				if err != nil {
+					return fmt.Errorf("exec %s: %w", state.Script, err)
+				}
+				machine = resolved
 			}
 			for key := range environment {
 				delete(environment, key)
@@ -391,6 +459,30 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 			}
 			run.Status = "running"
 			run.StateID = state.Next
+		case ir.StateJudge:
+			advanced, err := r.openJudgement(ctx, run, state, environment)
+			if err != nil {
+				return err
+			}
+			if !advanced {
+				return nil
+			}
+		case ir.StateVerdict:
+			advanced, err := r.applyVerdict(ctx, run, state, environment)
+			if err != nil {
+				return err
+			}
+			if !advanced {
+				return nil
+			}
+		case ir.StateTrap:
+			resolved, err := r.resolveTrap(ctx, run, state, environment)
+			if err != nil {
+				return err
+			}
+			if !resolved {
+				return nil
+			}
 		case ir.StatePolicy:
 			run.StateID = state.Next
 		case ir.StateLimit:
@@ -529,6 +621,301 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 	return fmt.Errorf("machine exceeded internal transition safety limit")
 }
 
+// openJudgement prepares an observation. It resolves the ratified clause the
+// observer will apply and freezes the evidence it is allowed to see. A clause
+// the supervisor has not ratified gives the observer no standing at all, so the
+// judgement escalates to a human instead of being guessed at.
+func (r *Runner) openJudgement(ctx context.Context, run *store.Run, state ir.State, environment Environment) (bool, error) {
+	if state.Judge == nil {
+		return false, fmt.Errorf("judge state %s has no request", state.ID)
+	}
+	_, err := r.store.FindJudgement(ctx, run.ID, state.ID, run.Iteration)
+	if err == nil {
+		run.StateID = state.Next
+		return true, nil
+	}
+	if err != sql.ErrNoRows {
+		return false, err
+	}
+
+	clauses, err := r.store.ListTaste(ctx, run.WorkspaceRoot, true)
+	if err != nil {
+		return false, err
+	}
+	var clause *store.TasteClause
+	for index := range clauses {
+		if clauses[index].Name == state.Judge.Clause {
+			clause = &clauses[index]
+			break
+		}
+	}
+	if clause == nil {
+		environment[state.Name] = map[string]any{
+			"verdict": store.VerdictAbstain,
+			"reason":  fmt.Sprintf("no ratified taste clause named %q", state.Judge.Clause),
+		}
+		run.StateID = state.Judge.Escalate
+		return true, nil
+	}
+	if exceeded, err := r.enforceJudgementLimit(ctx, run, environment); err != nil || exceeded {
+		return false, err
+	}
+
+	evidence, err := r.collectEvidence(ctx, run, state, environment)
+	if err != nil {
+		return false, err
+	}
+	if _, err := r.store.OpenJudgement(ctx, store.OpenJudgementParams{
+		ParentRunID: run.ID, StateID: state.ID, Iteration: run.Iteration, Name: state.Judge.Clause,
+		Question: clause.Question, Clause: clause.Clause, Evidence: evidence,
+	}); err != nil {
+		return false, err
+	}
+	run.StateID = state.Next
+	return true, nil
+}
+
+func (r *Runner) collectEvidence(ctx context.Context, run *store.Run, state ir.State, environment Environment) ([]store.Evidence, error) {
+	evaluator := r.evaluator(run)
+	collector := r.collector
+	if collector == nil {
+		collector = CommandCollector{}
+	}
+	evidence := make([]store.Evidence, 0, len(state.Judge.Evidence))
+	for _, expression := range state.Judge.Evidence {
+		value, err := evaluator.Evaluate(ctx, expression, environment)
+		if err != nil {
+			return nil, fmt.Errorf("evaluate evidence: %w", err)
+		}
+		command, ok := value.(string)
+		if !ok {
+			return nil, errors.New("evidence must evaluate to a command string")
+		}
+		output, err := collector.Collect(ctx, run.WorkspaceRoot, command)
+		record := store.Evidence{Command: command, Output: output}
+		if err != nil {
+			record.Error = err.Error()
+		}
+		evidence = append(evidence, record)
+	}
+	return evidence, nil
+}
+
+// applyVerdict dispatches what the observer said. The three answers are not
+// symmetric: a pass advances, a fail re-derives the work like any failed gate,
+// and an abstention is not an answer at all — it is the observer admitting the
+// profile did not cover this, which is exactly when a human must decide.
+func (r *Runner) applyVerdict(ctx context.Context, run *store.Run, state ir.State, environment Environment) (bool, error) {
+	if state.Judge == nil || state.JudgeRef == "" {
+		return false, fmt.Errorf("verdict state %s has no judgement", state.ID)
+	}
+	judgement, err := r.store.FindJudgement(ctx, run.ID, state.JudgeRef, run.Iteration)
+	if err != nil && err != sql.ErrNoRows {
+		return false, err
+	}
+
+	verdict, citation, reasoning := store.VerdictAbstain, "", "the observer ended without recording a verdict"
+	if err == nil && judgement.Status == store.JudgementRecorded {
+		verdict, citation, reasoning = judgement.Verdict, judgement.Citation, judgement.Reasoning
+	}
+	environment[state.Name] = map[string]any{
+		"verdict": verdict, "citation": citation, "reasoning": reasoning,
+		"passed": verdict == store.VerdictPass,
+	}
+	r.recordVerification(run.ID, VerificationObservation{
+		Name:   state.Name + " (judged)",
+		Passed: verdict == store.VerdictPass,
+		Error:  judgementDetail(verdict, citation, reasoning),
+	})
+
+	switch verdict {
+	case store.VerdictPass:
+		if judgement != nil && state.Judge.AuditRate > 0 {
+			if _, err := r.store.SampleForAudit(ctx, judgement.ID, state.Judge.AuditRate); err != nil {
+				return false, err
+			}
+		}
+		run.StateID = state.Next
+		return true, nil
+	case store.VerdictFail:
+		// Not every taste failure is one the agent can perceive. After enough
+		// consecutive failures the loop is no longer converging, and repeating
+		// it only spends attempts on work that will not improve.
+		failures, err := r.store.CountConsecutiveFailures(ctx, run.ID, state.JudgeRef)
+		if err != nil {
+			return false, err
+		}
+		if state.Judge.EscalateAfter > 0 && failures >= state.Judge.EscalateAfter {
+			run.StateID = state.Judge.Escalate
+			return true, nil
+		}
+		if err := failVerification(run, environment, state, r.clock.Now()); err != nil {
+			return false, err
+		}
+		return !terminalStatus(run.Status), nil
+	default:
+		run.StateID = state.Judge.Escalate
+		return true, nil
+	}
+}
+
+func judgementDetail(verdict, citation, reasoning string) string {
+	if verdict == store.VerdictPass {
+		return ""
+	}
+	detail := verdict
+	if citation != "" {
+		detail += " against " + citation
+	}
+	if reasoning != "" {
+		detail += ": " + reasoning
+	}
+	return detail
+}
+
+// enforceJudgementLimit budgets the money an observer costs, which is a
+// different resource from the attention a trap costs.
+func (r *Runner) enforceJudgementLimit(ctx context.Context, run *store.Run, environment Environment) (bool, error) {
+	maximum, ok := limitValue(environment, "judgements")
+	if !ok {
+		return false, nil
+	}
+	opened, err := r.store.CountJudgements(ctx, run.ID)
+	if err != nil {
+		return false, err
+	}
+	if opened < maximum {
+		return false, nil
+	}
+	setLimitExceeded(run, "judgements", maximum)
+	return true, nil
+}
+
+// resolveTrap raises the supervisor request for this exact occurrence of a trap
+// state and reports whether the machine may advance. An unanswered trap
+// suspends the run; Hamster never guesses a verdict on the supervisor's behalf.
+func (r *Runner) resolveTrap(ctx context.Context, run *store.Run, state ir.State, environment Environment) (bool, error) {
+	if state.Trap == nil {
+		return false, fmt.Errorf("trap state %s has no request", state.ID)
+	}
+	existing, err := r.store.FindTrapOccurrence(ctx, run.ID, state.ID, run.Iteration)
+	if err != nil && err != sql.ErrNoRows {
+		return false, err
+	}
+	trap := existing
+	if err == sql.ErrNoRows {
+		if exceeded, limitErr := r.enforceTrapLimit(ctx, run, environment); limitErr != nil || exceeded {
+			return false, limitErr
+		}
+		prompt, options, buildErr := r.trapRequest(ctx, run, state, environment)
+		if buildErr != nil {
+			return false, buildErr
+		}
+		trap, err = r.store.RaiseTrap(ctx, store.RaiseTrapParams{
+			RunID: run.ID, StateID: state.ID, Iteration: run.Iteration, Name: state.Name,
+			Kind: state.Trap.Kind, Prompt: prompt, Options: options, Clause: state.Trap.Clause,
+		})
+		if err != nil {
+			return false, err
+		}
+	}
+
+	if trap.Status == store.TrapOpen {
+		run.Status = store.TrapStatusID
+		return false, nil
+	}
+
+	run.Status = "running"
+	switch trap.Resolution {
+	case store.TrapApprove:
+		environment[state.Name] = map[string]any{"approved": true, "resolution": trap.Resolution, "note": trap.Note}
+		run.StateID = state.Next
+	case store.TrapReject:
+		environment[state.Name] = map[string]any{"approved": false, "resolution": trap.Resolution, "note": trap.Note}
+		if err := failVerification(run, environment, state, r.clock.Now()); err != nil {
+			return false, err
+		}
+		return !terminalStatus(run.Status), nil
+	case store.TrapCancel:
+		return false, fmt.Errorf("trap %s was cancelled", trap.ID)
+	default:
+		environment[state.Name] = map[string]any{"choice": trap.Resolution, "resolution": trap.Resolution, "note": trap.Note}
+		run.StateID = state.Next
+	}
+	return true, nil
+}
+
+func (r *Runner) trapRequest(ctx context.Context, run *store.Run, state ir.State, environment Environment) (string, []string, error) {
+	evaluator := r.evaluator(run)
+	promptValue, err := evaluator.Evaluate(ctx, state.Trap.Prompt, environment)
+	if err != nil {
+		return "", nil, fmt.Errorf("evaluate trap prompt: %w", err)
+	}
+	prompt, ok := promptValue.(string)
+	if !ok {
+		return "", nil, errors.New("trap prompt must evaluate to a string")
+	}
+	options := make([]string, 0, len(state.Trap.Options))
+	for _, expression := range state.Trap.Options {
+		value, err := evaluator.Evaluate(ctx, expression, environment)
+		if err != nil {
+			return "", nil, fmt.Errorf("evaluate trap option: %w", err)
+		}
+		options = append(options, formatOption(value))
+	}
+	return prompt, options, nil
+}
+
+// enforceTrapLimit treats supervisor attention as a budgeted resource. A run
+// that would ask more questions than it declared fails closed rather than
+// quietly filling the review queue.
+func (r *Runner) enforceTrapLimit(ctx context.Context, run *store.Run, environment Environment) (bool, error) {
+	maximum, ok := limitValue(environment, "traps")
+	if !ok {
+		return false, nil
+	}
+	raised, err := r.store.CountTraps(ctx, run.ID)
+	if err != nil {
+		return false, err
+	}
+	if raised < maximum {
+		return false, nil
+	}
+	setLimitExceeded(run, "traps", maximum)
+	return true, nil
+}
+
+func limitValue(environment Environment, wanted string) (int, bool) {
+	limits, _ := environment["__limits"].(map[string]any)
+	for _, raw := range limits {
+		limit, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if kind, _ := limit["kind"].(string); kind != wanted {
+			continue
+		}
+		value, _ := limit["value"].(string)
+		maximum, err := strconv.Atoi(strings.ReplaceAll(value, "_", ""))
+		if err != nil {
+			continue
+		}
+		return maximum, true
+	}
+	return 0, false
+}
+
+func formatOption(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return string(payload)
+}
+
 func (r *Runner) loopResult(ctx context.Context, run *store.Run, environment Environment) (any, error) {
 	if run.Machine.Kind == ir.LoopForeach {
 		return environment[foreachKey(run.Machine, "result")], nil
@@ -617,16 +1004,45 @@ func activateLimit(environment Environment, machine ir.Machine, state ir.State, 
 
 func verificationsPass(machine ir.Machine, environment Environment) bool {
 	for _, state := range machine.States {
-		if state.Kind == ir.StateVerify && !truthy(environment[state.Name]) {
-			return false
+		// A gate on a branch that was not taken says nothing about this
+		// iteration. Only gates on every path can hold completion back.
+		if state.Conditional {
+			continue
+		}
+		switch state.Kind {
+		case ir.StateVerify:
+			if !truthy(environment[state.Name]) {
+				return false
+			}
+		case ir.StateTrap:
+			// A verdict is a structured value, so ordinary truthiness would
+			// read a rejection as a pass. The gate is the verdict itself.
+			if !trapSatisfied(environment[state.Name]) {
+				return false
+			}
 		}
 	}
 	return true
 }
 
+func trapSatisfied(value any) bool {
+	verdict, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	if approved, present := verdict["approved"]; present {
+		return truthy(approved)
+	}
+	choice, _ := verdict["choice"].(string)
+	return choice != ""
+}
+
+// clearVerifications resets the ladder for the next iteration. Trap verdicts are
+// cleared with it: once the work is re-derived, an earlier approval described an
+// artifact that no longer exists.
 func clearVerifications(machine ir.Machine, environment Environment) {
 	for _, state := range machine.States {
-		if state.Kind == ir.StateVerify {
+		if state.Kind == ir.StateVerify || state.Kind == ir.StateTrap {
 			delete(environment, state.Name)
 		}
 	}
@@ -734,7 +1150,19 @@ func (r *Runner) runLock(runID string) *sync.Mutex {
 }
 
 func (r *Runner) evaluator(run *store.Run) Evaluator {
-	return Evaluator{WorkingDirectory: run.WorkspaceRoot, Verifier: r.verifier}
+	return Evaluator{
+		WorkingDirectory: run.WorkspaceRoot, Verifier: r.verifier, RunID: run.ID,
+		Observed: func(ctx context.Context, observerRunID string) (bool, error) {
+			judgement, err := r.store.FindObservedJudgement(ctx, observerRunID)
+			if err == sql.ErrNoRows {
+				return false, nil
+			}
+			if err != nil {
+				return false, err
+			}
+			return judgement.Status == store.JudgementRecorded, nil
+		},
+	}
 }
 
 func verificationCommand(expression *ir.Expression) string {

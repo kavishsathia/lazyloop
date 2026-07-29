@@ -86,8 +86,8 @@ func (p *parser) parseLoop() Loop {
 
 func (p *parser) parseStatement(loopKind TokenKind) Statement {
 	start := p.peek().Span.Start
-	if loopKind == TokenFlow && p.peek().Kind != TokenStep && p.peek().Kind != TokenIf && p.peek().Kind != TokenExec && p.peek().Kind != TokenWait {
-		p.errorAt(p.peek(), "flow may contain only step, if, exec, or wait declarations")
+	if loopKind == TokenFlow && p.peek().Kind != TokenStep && p.peek().Kind != TokenIf && p.peek().Kind != TokenExec && p.peek().Kind != TokenWait && p.peek().Kind != TokenTrap && p.peek().Kind != TokenJudge {
+		p.errorAt(p.peek(), "flow may contain only step, if, exec, wait, trap, or judge declarations")
 		return nil
 	}
 	switch p.peek().Kind {
@@ -153,6 +153,20 @@ func (p *parser) parseStatement(loopKind TokenKind) Statement {
 		target := p.parseExpression()
 		end := p.consume(TokenSemicolon, "expected ';' after wait")
 		return &Wait{Span: Span{Start: start, End: end.Span.End}, Target: target}
+	case TokenTrap:
+		p.advance()
+		name := p.consume(TokenIdentifier, "expected trap name")
+		p.consume(TokenAssign, "expected '=' after trap name")
+		request := p.parseExpression()
+		end := p.consume(TokenSemicolon, "expected ';' after trap")
+		return &Trap{Span: Span{Start: start, End: end.Span.End}, Name: name.Lexeme, Request: request}
+	case TokenJudge:
+		p.advance()
+		name := p.consume(TokenIdentifier, "expected judge name")
+		p.consume(TokenAssign, "expected '=' after judge name")
+		request := p.parseExpression()
+		end := p.consume(TokenSemicolon, "expected ';' after judge")
+		return &Judge{Span: Span{Start: start, End: end.Span.End}, Name: name.Lexeme, Request: request}
 	case TokenVerify:
 		p.advance()
 		name := p.consume(TokenIdentifier, "expected verification name")
@@ -177,7 +191,7 @@ func (p *parser) parseStatement(loopKind TokenKind) Statement {
 		end := p.consume(TokenSemicolon, "expected ';' after policy")
 		return &Policy{Span: Span{Start: start, End: end.Span.End}, Allow: allow, Value: value}
 	default:
-		p.errorAt(p.peek(), "expected step, if, exec, verify, limit, return, allow, or disallow")
+		p.errorAt(p.peek(), "expected step, if, exec, wait, trap, judge, verify, limit, return, allow, or disallow")
 		return nil
 	}
 }
