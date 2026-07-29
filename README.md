@@ -326,6 +326,28 @@ waiting parent. `exec` clears the old machine stack and machine-local limits;
 `wait` currently accepts direct children. While suspended, Codex may use its
 native `wait_agent` operation; Hamster alone evaluates the language-level wait.
 
+## Playground
+
+The observability console watches a session you are already running. The
+playground is the other half — a place to try a loop before it governs real
+work:
+
+```sh
+hamster playground     # http://127.0.0.1:7332
+```
+
+Write a loop, give it a task, add taste clauses, and run it. Every experiment
+gets a throwaway workspace of its own, so two runs of the same task start from
+identical state and nothing an experiment does reaches anything you care about.
+The page compiles the loop as you type, and the timeline shows what the agent
+tried beside what Hamster decided about it.
+
+The playground keeps its own Codex home. Hooks that live in a throwaway
+workspace are discovered but never trusted, and Codex treats an untrusted hook
+as absent — the loop would appear to run while enforcing nothing. A stable home
+means one hook file whose trust survives every experiment. It borrows the login
+from your own Codex home, so run `codex login` first.
+
 ## Runtime observability
 
 The daemon hosts a local operational console on a loopback-only HTTP listener.

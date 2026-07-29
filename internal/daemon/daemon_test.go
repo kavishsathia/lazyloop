@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"hamster/internal/compiler"
 	"hamster/internal/hook"
@@ -333,4 +335,60 @@ func TestAgentCannotBypassRuntimeOwnedExecAndWait(t *testing.T) {
 	if json.Unmarshal(response.Result, &decision) != nil || decision.Permission != "deny" || !strings.Contains(decision.Reason, "runtime-owned") {
 		t.Fatalf("wait decision = %#v", decision)
 	}
+}
+
+// A busy console port must not stop the daemon. A hook that cannot reach one
+// exits non-zero, and Codex treats that as a blocking error that ends the
+// agent's turn — so a second Hamster home used to break every session silently.
+func TestDaemonSurvivesABusyDashboardPort(t *testing.T) {
+	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close()
+
+	// A unix socket path must stay under the platform limit, which t.TempDir()
+	// alone can exceed on macOS.
+	home, err := os.MkdirTemp("", "hd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(home)
+	state, err := store.Open(filepath.Join(home, "hamster.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	socket := filepath.Join(home, "hamster.sock")
+	dashboardFile := filepath.Join(home, "dashboard-url")
+	served := make(chan error, 1)
+	go func() {
+		served <- New(state).ServeWithDashboard(ctx, socket, blocker.Addr().String(), dashboardFile)
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if connection, err := net.DialTimeout("unix", socket, 50*time.Millisecond); err == nil {
+			connection.Close()
+			break
+		}
+		select {
+		case err := <-served:
+			t.Fatalf("daemon exited instead of serving: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the daemon never accepted connections despite the console port being taken")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	url, err := os.ReadFile(dashboardFile)
+	if err != nil || len(url) == 0 {
+		t.Fatalf("the console did not fall back to a free port: %v", err)
+	}
+	cancel()
+	<-served
 }

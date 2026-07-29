@@ -86,7 +86,14 @@ func (s *Server) serve(ctx context.Context, socketPath, dashboardAddress, dashbo
 		}
 		dashboardListener, err = net.Listen("tcp", dashboardAddress)
 		if err != nil {
-			return fmt.Errorf("listen on dashboard %s: %w", dashboardAddress, err)
+			// The console is a convenience; the socket is the daemon's job. A
+			// busy port must not stop the daemon, because a hook that cannot
+			// reach one exits non-zero and takes the agent's whole turn with
+			// it — which is how a second Hamster home used to break silently.
+			dashboardListener, err = net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				return fmt.Errorf("listen on dashboard %s: %w", dashboardAddress, err)
+			}
 		}
 		dashboardServer = &http.Server{Handler: observe.NewHandler(s.store), ReadHeaderTimeout: 5 * time.Second}
 		go func() { _ = dashboardServer.Serve(dashboardListener) }()

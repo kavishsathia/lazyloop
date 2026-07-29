@@ -26,6 +26,7 @@ type Supervisor struct {
 	mu       sync.Mutex
 	cancels  map[string]context.CancelFunc
 	CodexBin string
+	codex    *codexHome
 }
 
 func NewSupervisor(state *store.Store, hamsterBinary, home, root string) *Supervisor {
@@ -61,6 +62,18 @@ func (s *Supervisor) Launch(ctx context.Context, params LaunchParams) (*store.Pl
 	if err := prepareWorkspace(workspace, s.binary, params.Script); err != nil {
 		return nil, err
 	}
+	// Trust is arranged once, lazily, so starting the server never depends on
+	// Codex being reachable.
+	if s.codex == nil {
+		home, err := ensureCodexHome(s.root, s.binary)
+		if err != nil {
+			return nil, err
+		}
+		s.codex = home
+	}
+	if err := s.codex.trustWorkspace(workspace); err != nil {
+		return nil, err
+	}
 	if err := seedTaste(s.store, workspace, params.Taste); err != nil {
 		return nil, err
 	}
@@ -89,13 +102,18 @@ func (s *Supervisor) execute(runID, workspace, prompt string) {
 
 	command := exec.CommandContext(ctx, s.CodexBin, "exec",
 		"--json",
-		"--dangerously-bypass-hook-trust",
 		"--skip-git-repo-check",
+		// The agent must be able to change the workspace, or every experiment
+		// stalls on a read-only sandbox instead of showing you the loop.
+		"-s", "workspace-write",
 		"-C", workspace,
 		StartPrompt(prompt),
 	)
 	command.Dir = workspace
 	command.Env = append(os.Environ(), "HAMSTER_HOME="+s.home)
+	if s.codex != nil {
+		command.Env = append(command.Env, "CODEX_HOME="+s.codex.Path)
+	}
 
 	stdout, err := command.StdoutPipe()
 	if err != nil {
