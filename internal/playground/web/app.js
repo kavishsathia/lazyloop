@@ -8,8 +8,8 @@ const DEFAULT_SCRIPT = `goal {
   allow apply_patch;
 
   verify exists = bash.check("test -f NOTES.md");
-  trap shipped = user.approve("Do these notes read well?");
-  return shipped;
+  trap "Do these notes read well?";
+  return exists;
 }`;
 
 const $ = (id) => document.getElementById(id);

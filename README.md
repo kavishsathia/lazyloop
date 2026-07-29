@@ -69,8 +69,8 @@ goal {
   limit traps 2;
   verify tests_pass = bash.check("go test ./...");
   verify vet_passes = bash.check("go vet ./...");
-  trap shipped = user.approve("Do the new exported names match the package?");
-  return shipped;
+  trap "Do the new exported names match the package?";
+  return tests_pass;
 }
 ```
 
@@ -85,8 +85,8 @@ Hamster does not demand a token verifier to dress it up as objective:
 ```hmstr
 goal {
   limit traps 4;
-  trap reads_well = user.approve("Is this any good?");
-  return reads_well;
+  trap "Is this any good?";
+  return "done";
 }
 ```
 
@@ -95,7 +95,7 @@ In a `flow` a trap is instead a **checkpoint** between steps:
 ```hmstr
 } with flow {
   step build = bash.run("go build ./...");
-  trap looks_right = user.approve("Is this the right shape before I continue?");
+  trap "Is this the right shape before I continue?";
 }
 ```
 
@@ -145,7 +145,7 @@ the loop from that reasoning. A selection trap pairs with `fork`: run the
 alternatives to completion, then choose between finished results.
 
 ```hmstr
-trap style = user.select("Which error style?", options: ["result-type", "sentinel"]);
+trap "Which error style?" ["result-type", "sentinel"];
 ```
 
 The compiler's job is to guarantee the emitted state is answerable: only
@@ -203,30 +203,27 @@ of its own, only what this profile grants it.
 
 ## Judge
 
-A `judge` spends a ratified clause instead of your attention. It is the
+A `judge` spends your ratified standards instead of your attention. It is the
 automated counterpart of a trap:
 
 ```hmstr
 } with flow {
   step build = bash.run("go build ./...");
-  judge naming = taste.check("git diff -- '*.go'");
+  judge "the new exported names match the package";
 }
 ```
 
-The judge name is the clause it applies. There is no judge instruction in the
-runtime — it desugars into `fork`, `exec`, `wait`, and a verdict dispatch, and
+The observer applies your whole ratified profile. There is no judge instruction
+in the runtime — it desugars into `fork`, `exec`, `wait`, and a verdict dispatch, and
 that desugaring is the enforcement:
 
 - **No contamination.** The observer is a different subagent running a
   different program. `exec` clears the working agent's context, so the
   reasoning that produced the work never reaches the judgement of it.
-- **No standing of its own.** It applies one ratified clause. With no ratified
-  clause the observer never runs at all and the judgement escalates.
-- **Cannot touch the work.** The synthesized observer machine allows `hamster`
-  commands and nothing else, so it can read the profile and the evidence and
-  record a verdict, but it structurally cannot edit code or run tests.
-- **Cannot choose what it sees.** Evidence is gathered by the parent from
-  statically declared commands and frozen before the fork.
+- **No standing of its own.** It applies your ratified standards. With none
+  adopted the observer never runs at all and the judgement escalates to you.
+- **Cannot touch the work.** It investigates the workspace as a reviewer would,
+  but `apply_patch` is denied, so it cannot edit what it is judging.
 
 Verdicts are three-valued. A pass advances, a fail re-derives the work like any
 failed gate, and an abstention transfers control to a supervisor. A pass or
@@ -235,20 +232,15 @@ escalates to a human rather than passing as your taste. An observer answers
 once, and one that never speaks times out and abstains rather than hanging its
 parent.
 
-```hmstr
-judge naming = taste.check("git diff -- '*.go'", escalate_after: 2, audit: 20);
-```
-
-`escalate_after` bounds consecutive failures before the question becomes yours
-(default 3) — a taste failure the agent cannot perceive will not fix itself, and
-repeating it spends attempts without converging. `limit judgements N` bounds the
-money observers cost, which is a different resource from the attention
-`limit traps N` bounds.
+Repeated failure of the same judgement becomes your question — a taste failure
+the agent cannot perceive will not fix itself, and repeating it spends attempts
+without converging. `limit judgements N` bounds the money observers cost, which
+is a different resource from the attention `limit traps N` bounds.
 
 ## Audits, and how the queue shrinks
 
-A judge is only as trustworthy as the clause behind it. `audit: N` samples one
-in every N passing verdicts for a spot-check:
+A judge is only as trustworthy as the clause behind it. A sample of passing verdicts is set
+aside for a spot-check:
 
 ```sh
 hamster audits

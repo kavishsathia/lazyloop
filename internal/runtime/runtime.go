@@ -116,7 +116,9 @@ func (r *Runner) HandleHook(ctx context.Context, event hook.Event) (hook.Decisio
 	}
 
 	if err := r.pump(ctx, run, environment); err != nil {
-		return hook.Decision{}, err
+		// A runtime failure is Hamster breaking, not the loop escalating, and
+		// saying so plainly stops an agent from treating a defect as a verdict.
+		return r.failRun(ctx, run, err)
 	}
 	run.Variables, _ = json.Marshal(environment)
 	observations := r.observationsAfter(run.ID, observationOffset)
@@ -269,7 +271,9 @@ func (r *Runner) SignalGoalAchieved(ctx context.Context, event hook.Event) (hook
 	observationOffset := r.observationCount(run.ID)
 	run.StateID = state.Next
 	if err := r.pump(ctx, run, environment); err != nil {
-		return hook.Decision{}, err
+		// A runtime failure is Hamster breaking, not the loop escalating, and
+		// saying so plainly stops an agent from treating a defect as a verdict.
+		return r.failRun(ctx, run, err)
 	}
 	run.Variables, _ = json.Marshal(environment)
 	observations := r.observationsAfter(run.ID, observationOffset)
@@ -297,6 +301,25 @@ func (r *Runner) SignalGoalAchieved(ctx context.Context, event hook.Event) (hook
 		err = r.store.FinalizeRun(ctx, run.ID)
 	}
 	return decision, err
+}
+
+// failRun terminates a run whose machine could not be evaluated, so the defect
+// is visible as a defect instead of surfacing to the agent as raw error text.
+func (r *Runner) failRun(ctx context.Context, run *store.Run, cause error) (hook.Decision, error) {
+	run.Status = "failed"
+	run.TerminationReason = "Hamster runtime error: " + cause.Error()
+	if err := r.store.UpdateRun(ctx, run.StateID, run); err != nil {
+		return hook.Decision{}, cause
+	}
+	if err := r.store.FinalizeRun(ctx, run.ID); err != nil {
+		return hook.Decision{}, cause
+	}
+	return hook.Decision{
+		Permission: "allow", Tracked: true, RunID: run.ID,
+		Context: fmt.Sprintf("Hamster itself failed on run %s and has stopped governing it: %s. "+
+			"This is a defect in the loop or the runtime, not a decision about your work. "+
+			"Report it rather than working around it.", run.ID, cause),
+	}, nil
 }
 
 func signalDecision(run *store.Run, observations []VerificationObservation) hook.Decision {
@@ -621,10 +644,9 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 	return fmt.Errorf("machine exceeded internal transition safety limit")
 }
 
-// openJudgement prepares an observation. It resolves the ratified clause the
-// observer will apply and freezes the evidence it is allowed to see. A clause
-// the supervisor has not ratified gives the observer no standing at all, so the
-// judgement escalates to a human instead of being guessed at.
+// openJudgement records what an observer is being asked. The whole ratified
+// profile is its standard, so a workspace with no adopted taste gives it no
+// standing at all and the question goes straight to a human.
 func (r *Runner) openJudgement(ctx context.Context, run *store.Run, state ir.State, environment Environment) (bool, error) {
 	if state.Judge == nil {
 		return false, fmt.Errorf("judge state %s has no request", state.ID)
@@ -642,17 +664,10 @@ func (r *Runner) openJudgement(ctx context.Context, run *store.Run, state ir.Sta
 	if err != nil {
 		return false, err
 	}
-	var clause *store.TasteClause
-	for index := range clauses {
-		if clauses[index].Name == state.Judge.Clause {
-			clause = &clauses[index]
-			break
-		}
-	}
-	if clause == nil {
+	if len(clauses) == 0 {
 		environment[state.Name] = map[string]any{
 			"verdict": store.VerdictAbstain,
-			"reason":  fmt.Sprintf("no ratified taste clause named %q", state.Judge.Clause),
+			"reason":  "this workspace has no ratified taste for an observer to apply",
 		}
 		run.StateID = state.Judge.Escalate
 		return true, nil
@@ -661,44 +676,18 @@ func (r *Runner) openJudgement(ctx context.Context, run *store.Run, state ir.Sta
 		return false, err
 	}
 
-	evidence, err := r.collectEvidence(ctx, run, state, environment)
-	if err != nil {
-		return false, err
+	standards := make([]string, 0, len(clauses))
+	for _, clause := range clauses {
+		standards = append(standards, clause.Name+": "+clause.Clause)
 	}
 	if _, err := r.store.OpenJudgement(ctx, store.OpenJudgementParams{
-		ParentRunID: run.ID, StateID: state.ID, Iteration: run.Iteration, Name: state.Judge.Clause,
-		Question: clause.Question, Clause: clause.Clause, Evidence: evidence,
+		ParentRunID: run.ID, StateID: state.ID, Iteration: run.Iteration, Name: state.Name,
+		Question: state.Judge.Prompt, Clause: strings.Join(standards, "\n"),
 	}); err != nil {
 		return false, err
 	}
 	run.StateID = state.Next
 	return true, nil
-}
-
-func (r *Runner) collectEvidence(ctx context.Context, run *store.Run, state ir.State, environment Environment) ([]store.Evidence, error) {
-	evaluator := r.evaluator(run)
-	collector := r.collector
-	if collector == nil {
-		collector = CommandCollector{}
-	}
-	evidence := make([]store.Evidence, 0, len(state.Judge.Evidence))
-	for _, expression := range state.Judge.Evidence {
-		value, err := evaluator.Evaluate(ctx, expression, environment)
-		if err != nil {
-			return nil, fmt.Errorf("evaluate evidence: %w", err)
-		}
-		command, ok := value.(string)
-		if !ok {
-			return nil, errors.New("evidence must evaluate to a command string")
-		}
-		output, err := collector.Collect(ctx, run.WorkspaceRoot, command)
-		record := store.Evidence{Command: command, Output: output}
-		if err != nil {
-			record.Error = err.Error()
-		}
-		evidence = append(evidence, record)
-	}
-	return evidence, nil
 }
 
 // applyVerdict dispatches what the observer said. The three answers are not
@@ -730,8 +719,10 @@ func (r *Runner) applyVerdict(ctx context.Context, run *store.Run, state ir.Stat
 
 	switch verdict {
 	case store.VerdictPass:
-		if judgement != nil && state.Judge.AuditRate > 0 {
-			if _, err := r.store.SampleForAudit(ctx, judgement.ID, state.Judge.AuditRate); err != nil {
+		// A judge is only as trustworthy as the standards behind it, so a
+		// sample of its passes is set aside for a human to spot-check.
+		if judgement != nil {
+			if _, err := r.store.SampleForAudit(ctx, judgement.ID, auditSampleRate); err != nil {
 				return false, err
 			}
 		}
@@ -745,7 +736,7 @@ func (r *Runner) applyVerdict(ctx context.Context, run *store.Run, state ir.Stat
 		if err != nil {
 			return false, err
 		}
-		if state.Judge.EscalateAfter > 0 && failures >= state.Judge.EscalateAfter {
+		if failures >= consecutiveFailureLimit {
 			run.StateID = state.Judge.Escalate
 			return true, nil
 		}
@@ -758,6 +749,13 @@ func (r *Runner) applyVerdict(ctx context.Context, run *store.Run, state ir.Stat
 		return true, nil
 	}
 }
+
+// A taste failure the agent cannot perceive will not fix itself, so after this
+// many consecutive failures the question becomes a human's.
+const consecutiveFailureLimit = 3
+
+// auditSampleRate sets aside one in this many passing verdicts for review.
+const auditSampleRate = 10
 
 func judgementDetail(verdict, citation, reasoning string) string {
 	if verdict == store.VerdictPass {
@@ -807,13 +805,10 @@ func (r *Runner) resolveTrap(ctx context.Context, run *store.Run, state ir.State
 		if exceeded, limitErr := r.enforceTrapLimit(ctx, run, environment); limitErr != nil || exceeded {
 			return false, limitErr
 		}
-		prompt, options, buildErr := r.trapRequest(ctx, run, state, environment)
-		if buildErr != nil {
-			return false, buildErr
-		}
 		trap, err = r.store.RaiseTrap(ctx, store.RaiseTrapParams{
 			RunID: run.ID, StateID: state.ID, Iteration: run.Iteration, Name: state.Name,
-			Kind: state.Trap.Kind, Prompt: prompt, Options: options, Clause: state.Trap.Clause,
+			Kind: state.Trap.Kind, Prompt: state.Trap.Prompt, Options: state.Trap.Options,
+			Clause: state.Trap.Clause,
 		})
 		if err != nil {
 			return false, err
@@ -843,27 +838,6 @@ func (r *Runner) resolveTrap(ctx context.Context, run *store.Run, state ir.State
 		run.StateID = state.Next
 	}
 	return true, nil
-}
-
-func (r *Runner) trapRequest(ctx context.Context, run *store.Run, state ir.State, environment Environment) (string, []string, error) {
-	evaluator := r.evaluator(run)
-	promptValue, err := evaluator.Evaluate(ctx, state.Trap.Prompt, environment)
-	if err != nil {
-		return "", nil, fmt.Errorf("evaluate trap prompt: %w", err)
-	}
-	prompt, ok := promptValue.(string)
-	if !ok {
-		return "", nil, errors.New("trap prompt must evaluate to a string")
-	}
-	options := make([]string, 0, len(state.Trap.Options))
-	for _, expression := range state.Trap.Options {
-		value, err := evaluator.Evaluate(ctx, expression, environment)
-		if err != nil {
-			return "", nil, fmt.Errorf("evaluate trap option: %w", err)
-		}
-		options = append(options, formatOption(value))
-	}
-	return prompt, options, nil
 }
 
 // enforceTrapLimit treats supervisor attention as a budgeted resource. A run

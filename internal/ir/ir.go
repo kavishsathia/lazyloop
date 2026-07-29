@@ -107,9 +107,9 @@ const (
 )
 
 type Trap struct {
-	Kind    string       `json:"kind"`
-	Prompt  Expression   `json:"prompt"`
-	Options []Expression `json:"options,omitempty"`
+	Kind    string   `json:"kind"`
+	Prompt  string   `json:"prompt"`
+	Options []string `json:"options,omitempty"`
 	// Clause names the taste this trap is standing in for. Resolving it writes
 	// the supervisor's reasoning back as a proposed refinement.
 	Clause string `json:"clause,omitempty"`
@@ -119,9 +119,11 @@ type Trap struct {
 // to see. Evidence is gathered by the parent, never by the observer, so the
 // observer cannot choose what to look at.
 type Judge struct {
-	Clause   string       `json:"clause"`
-	Evidence []Expression `json:"evidence,omitempty"`
-	Escalate string       `json:"escalate,omitempty"`
+	// Prompt is what the observer is asked to validate. It applies the whole
+	// ratified profile rather than one named clause, and investigates the
+	// workspace itself instead of being handed a fixed set of evidence.
+	Prompt   string `json:"prompt"`
+	Escalate string `json:"escalate,omitempty"`
 	// EscalateAfter bounds how many times the same clause may fail before the
 	// question goes to a human. Not every taste failure is one the agent can
 	// perceive, so looping forever wastes attempts on work it cannot fix.

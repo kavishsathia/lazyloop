@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +20,7 @@ func Compile(program *language.Program) (*ir.Program, language.Diagnostics) {
 	c := &compiler{}
 	result := &ir.Program{Version: ir.Version}
 	for _, loop := range program.Loops {
-		result.Machines = append(result.Machines, *c.compileLoop(loop))
+		result.Machines = append(result.Machines, *c.compileLoop(loop, nil))
 	}
 	if len(result.Machines) == 0 {
 		c.error(language.Span{}, "program must contain at least one loop")
@@ -29,7 +30,7 @@ func Compile(program *language.Program) (*ir.Program, language.Diagnostics) {
 	return result, c.diagnostics
 }
 
-func (c *compiler) compileLoop(loop language.Loop) *ir.Machine {
+func (c *compiler) compileLoop(loop language.Loop, scope map[string]bool) *ir.Machine {
 	machine := &ir.Machine{
 		ID: fmt.Sprintf("machine_%d", c.nextMachine), Span: loop.NodeSpan(),
 	}
@@ -38,13 +39,13 @@ func (c *compiler) compileLoop(loop language.Loop) *ir.Machine {
 	switch node := loop.(type) {
 	case *language.Goal:
 		machine.Kind = ir.LoopGoal
-		c.compileGoal(machine, node)
+		c.compileGoal(machine, node, scope)
 	case *language.Foreach:
 		machine.Kind = ir.LoopForeach
 		machine.Foreach = &ir.Foreach{
 			Binding:  node.Binding,
 			Sequence: c.compileExpression(node.Sequence),
-			Body:     c.compileLoop(node.Body),
+			Body:     c.compileLoop(node.Body, foreachScope(scope, node.Binding)),
 		}
 		c.compileForeachStates(machine)
 	default:
@@ -53,7 +54,8 @@ func (c *compiler) compileLoop(loop language.Loop) *ir.Machine {
 	return machine
 }
 
-func (c *compiler) compileGoal(machine *ir.Machine, goal *language.Goal) {
+func (c *compiler) compileGoal(machine *ir.Machine, goal *language.Goal, inherited map[string]bool) {
+	scope := c.bindings(goal, inherited)
 	for _, statement := range goal.Statements {
 		switch node := statement.(type) {
 		case *language.Limit:
@@ -72,7 +74,7 @@ func (c *compiler) compileGoal(machine *ir.Machine, goal *language.Goal) {
 		if len(goal.Flow.Statements) == 0 {
 			c.error(goal.Flow.Span, "attached flow must contain at least one statement")
 		}
-		c.compileFlowStatements(machine, goal.Flow.Statements)
+		c.compileFlowStatements(machine, goal.Flow.Statements, scope)
 	}
 	gateCount := 0
 	returnCount := 0
@@ -96,10 +98,17 @@ func (c *compiler) compileGoal(machine *ir.Machine, goal *language.Goal) {
 	// work the machine has already accepted — the scarcest resource is spent
 	// last.
 	for _, statement := range goal.Statements {
-		if node, ok := statement.(*language.Trap); ok {
+		switch node := statement.(type) {
+		case *language.Trap:
 			gateCount++
-			trap := c.compileTrap(node)
-			machine.States = append(machine.States, ir.State{Kind: ir.StateTrap, Executor: ir.ExecutorControl, Name: node.Name, Trap: trap, Span: node.Span})
+			machine.States = append(machine.States, ir.State{
+				Kind: ir.StateTrap, Executor: ir.ExecutorControl,
+				Name: fmt.Sprintf("__trap_%d", len(machine.States)),
+				Trap: c.compileTrap(node), Span: node.Span,
+			})
+		case *language.Judge:
+			gateCount++
+			c.compileJudge(machine, node)
 		}
 	}
 
@@ -112,9 +121,10 @@ func (c *compiler) compileGoal(machine *ir.Machine, goal *language.Goal) {
 		c.error(machine.Span, "goal must contain at least one gate: a verify Hamster can check or a trap a human answers")
 	}
 	c.appendLoopTerminalStates(machine)
+	c.validateReferences(machine, scope)
 }
 
-func (c *compiler) compileFlowStatements(machine *ir.Machine, statements []language.Statement) {
+func (c *compiler) compileFlowStatements(machine *ir.Machine, statements []language.Statement, machineScope map[string]bool) {
 	for _, statement := range statements {
 		switch node := statement.(type) {
 		case *language.Step:
@@ -122,7 +132,7 @@ func (c *compiler) compileFlowStatements(machine *ir.Machine, statements []langu
 			switch value := node.Value.(type) {
 			case *language.LoopValue:
 				state.Kind = ir.StateNested
-				state.Nested = c.compileLoop(value.Loop)
+				state.Nested = c.compileLoop(value.Loop, machineScope)
 			case *language.Fork:
 				state.Kind = ir.StateFork
 			case language.Expr:
@@ -135,7 +145,7 @@ func (c *compiler) compileFlowStatements(machine *ir.Machine, statements []langu
 			branchIndex := len(machine.States)
 			machine.States = append(machine.States, ir.State{Kind: ir.StateBranch, Executor: ir.ExecutorControl, Name: "if", Expression: &condition, Span: node.Span})
 			bodyStart := len(machine.States)
-			c.compileFlowStatements(machine, node.Statements)
+			c.compileFlowStatements(machine, node.Statements, machineScope)
 			afterBody := len(machine.States)
 			machine.States[branchIndex].OnSuccess = stateTarget(bodyStart)
 			machine.States[branchIndex].OnFailure = stateTarget(afterBody)
@@ -149,8 +159,11 @@ func (c *compiler) compileFlowStatements(machine *ir.Machine, statements []langu
 			expression := c.compileExpression(node.Target)
 			machine.States = append(machine.States, ir.State{Kind: ir.StateWait, Executor: ir.ExecutorRuntime, Name: "wait", Expression: &expression, Span: node.Span})
 		case *language.Trap:
-			trap := c.compileTrap(node)
-			machine.States = append(machine.States, ir.State{Kind: ir.StateTrap, Executor: ir.ExecutorControl, Name: node.Name, Trap: trap, Span: node.Span})
+			machine.States = append(machine.States, ir.State{
+				Kind: ir.StateTrap, Executor: ir.ExecutorControl,
+				Name: fmt.Sprintf("__trap_%d", len(machine.States)),
+				Trap: c.compileTrap(node), Span: node.Span,
+			})
 		case *language.Judge:
 			c.compileJudge(machine, node)
 		}
@@ -159,94 +172,41 @@ func (c *compiler) compileFlowStatements(machine *ir.Machine, statements []langu
 
 // compileTrap lowers a supervisor request. Hamster cannot compute a trap's
 // answer, so the compiler's whole job is to guarantee the emitted state is
-// answerable: a known request form, a static prompt, and — for a selection — a
-// closed set of options the supervisor can actually choose between.
+// answerable: a written-out question and, for a selection, a closed set of
+// options the supervisor can actually choose between.
 func (c *compiler) compileTrap(trap *language.Trap) *ir.Trap {
-	call, ok := trap.Request.(*language.Call)
-	if !ok {
-		c.error(trap.Span, "trap requires user.approve(PROMPT) or user.select(PROMPT, options: [...])")
-		return &ir.Trap{Kind: ir.TrapApproval}
-	}
-	path := callPath(call.Callee)
-	result := &ir.Trap{}
-	switch path {
-	case "user.approve":
-		result.Kind = ir.TrapApproval
-	case "user.select":
-		result.Kind = ir.TrapSelection
-	default:
-		c.error(trap.Span, fmt.Sprintf("trap cannot request %q; supported requests are user.approve and user.select", path))
-		return &ir.Trap{Kind: ir.TrapApproval}
-	}
-
-	var options *language.CallArgument
-	var prompt language.Expr
-	for index := range call.Arguments {
-		argument := call.Arguments[index]
-		switch argument.Name {
-		case "":
-			if prompt != nil {
-				c.error(argument.Span, path+" accepts one prompt")
-				continue
-			}
-			prompt = argument.Value
-		case "options":
-			if result.Kind != ir.TrapSelection {
-				c.error(argument.Span, "options may only be supplied to user.select")
-				continue
-			}
-			options = &call.Arguments[index]
-		default:
-			c.error(argument.Span, fmt.Sprintf("%s does not accept argument %q", path, argument.Name))
-		}
-	}
-
-	if prompt == nil {
-		c.error(trap.Span, path+" requires a prompt")
+	result := &ir.Trap{Kind: ir.TrapApproval, Prompt: trap.Prompt}
+	if len(trap.Options) == 0 {
 		return result
 	}
-	literal, ok := prompt.(*language.Literal)
-	if !ok || literal.Kind != "string" || strings.TrimSpace(literal.Value) == "" {
-		c.error(prompt.NodeSpan(), "trap prompt must be a non-empty string literal so it can be reviewed before the run starts")
+	if len(trap.Options) < 2 {
+		c.error(trap.Span, "a trap offering choices needs at least two options")
 		return result
 	}
-	result.Prompt = c.compileExpression(prompt)
-
-	if result.Kind == ir.TrapSelection {
-		if options == nil {
-			c.error(trap.Span, "user.select requires options: [...]")
+	result.Kind = ir.TrapSelection
+	for _, option := range trap.Options {
+		literal, ok := option.(*language.Literal)
+		if !ok || literal.Kind != "string" || strings.TrimSpace(literal.Value) == "" {
+			c.error(option.NodeSpan(), "trap options must be written-out strings")
 			return result
 		}
-		list, ok := options.Value.(*language.List)
-		if !ok || len(list.Values) < 2 {
-			c.error(options.Span, "user.select requires a static list of at least two options")
-			return result
-		}
-		for _, value := range list.Values {
-			result.Options = append(result.Options, c.compileExpression(value))
-		}
+		result.Options = append(result.Options, literal.Value)
 	}
 	return result
 }
 
 // compileJudge desugars a subjective check into process primitives. There is no
-// judge instruction in the runtime: a judge is a fork into a constrained
-// observer, an exec that clears the working agent's context, a wait, and a
-// verdict dispatch. That is what buys the observer a fresh context and an
-// allow-list it cannot escape, rather than a prompt asking it to behave.
+// judge instruction in the runtime: a judge is a fork into an observer, an exec
+// that clears the working agent's context, a wait, and a verdict dispatch. That
+// desugaring is what buys a judgement a reviewer who did not write the work.
 func (c *compiler) compileJudge(machine *ir.Machine, judge *language.Judge) {
-	evidence, options, ok := c.compileJudgeRequest(judge)
-	if !ok {
-		return
-	}
-	handle := "__judge_" + judge.Name
+	handle := fmt.Sprintf("__judge_%d", len(machine.States))
 	prepareIndex := len(machine.States)
 	forkIndex := prepareIndex + 1
 	branchIndex := forkIndex + 1
 	execIndex := branchIndex + 1
 	waitIndex := execIndex + 1
 	verdictIndex := waitIndex + 1
-	_ = verdictIndex
 	escalateIndex := verdictIndex + 1
 
 	observer := c.observerMachine(judge)
@@ -255,154 +215,56 @@ func (c *compiler) compileJudge(machine *ir.Machine, judge *language.Judge) {
 		Receiver: &ir.Expression{Kind: ir.ExpressionIdentifier, Name: handle, Span: judge.Span},
 	}
 	handleReference := ir.Expression{Kind: ir.ExpressionIdentifier, Name: handle, Span: judge.Span}
+	request := &ir.Judge{Prompt: judge.Prompt, Escalate: stateTarget(escalateIndex)}
 
 	machine.States = append(machine.States,
-		ir.State{
-			Kind: ir.StateJudge, Executor: ir.ExecutorRuntime, Name: judge.Name, Span: judge.Span,
-			Judge: &ir.Judge{Clause: judge.Name, Evidence: evidence, Escalate: stateTarget(escalateIndex),
-				EscalateAfter: options.escalateAfter, AuditRate: options.auditRate},
-		},
+		ir.State{Kind: ir.StateJudge, Executor: ir.ExecutorRuntime, Name: handle, Span: judge.Span, Judge: request},
 		ir.State{Kind: ir.StateFork, Executor: ir.ExecutorAgent, Name: handle, Span: judge.Span},
 		ir.State{Kind: ir.StateBranch, Executor: ir.ExecutorControl, Name: "if", Expression: &childCondition, Span: judge.Span,
 			OnSuccess: stateTarget(execIndex), OnFailure: stateTarget(waitIndex)},
 		ir.State{Kind: ir.StateExec, Executor: ir.ExecutorRuntime, Name: "exec", Span: judge.Span,
 			Machine: observer, JudgeRef: stateTarget(prepareIndex), Next: stateTarget(waitIndex)},
 		ir.State{Kind: ir.StateWait, Executor: ir.ExecutorRuntime, Name: "wait", Expression: &handleReference, Span: judge.Span},
-		ir.State{Kind: ir.StateVerdict, Executor: ir.ExecutorRuntime, Name: judge.Name, Span: judge.Span,
-			Next: stateTarget(escalateIndex + 1), JudgeRef: stateTarget(prepareIndex),
-			Judge: &ir.Judge{Clause: judge.Name, Escalate: stateTarget(escalateIndex),
-				EscalateAfter: options.escalateAfter, AuditRate: options.auditRate}},
+		ir.State{Kind: ir.StateVerdict, Executor: ir.ExecutorRuntime, Name: handle, Span: judge.Span,
+			Next: stateTarget(escalateIndex + 1), JudgeRef: stateTarget(prepareIndex), Judge: request},
 		// An observer that cannot decide does not get to invent an answer. It
 		// abstains, and abstention is a transfer of control to the supervisor.
-		ir.State{Kind: ir.StateTrap, Executor: ir.ExecutorControl, Name: judge.Name + "_escalated", Span: judge.Span,
+		ir.State{Kind: ir.StateTrap, Executor: ir.ExecutorControl, Name: handle + "_escalated", Span: judge.Span,
 			Conditional: true,
-			Trap: &ir.Trap{Kind: ir.TrapApproval, Clause: judge.Name, Prompt: ir.Expression{
-				Kind: ir.ExpressionLiteral, ValueKind: "string", Span: judge.Span,
-				Value: "The observer could not decide \"" + judge.Name + "\" from the ratified taste profile. Approve this work?",
-			}},
+			Trap: &ir.Trap{Kind: ir.TrapApproval, Clause: judge.Prompt,
+				Prompt: "The observer could not decide whether " + judge.Prompt + ". Approve this work?"},
 		},
 	)
 }
 
-type judgeOptions struct {
-	escalateAfter int
-	auditRate     int
-}
-
-func (c *compiler) compileJudgeRequest(judge *language.Judge) ([]ir.Expression, judgeOptions, bool) {
-	// An observer that fails the same clause repeatedly is reporting that the
-	// agent cannot perceive the problem, which is a human's call rather than
-	// something to retry until the attempt budget runs out.
-	options := judgeOptions{escalateAfter: defaultEscalateAfter}
-	call, ok := judge.Request.(*language.Call)
-	if !ok || callPath(call.Callee) != "taste.check" {
-		c.error(judge.Span, "judge requires taste.check(EVIDENCE); an observer applies a ratified clause and has no standard of its own")
-		return nil, options, false
-	}
-	var evidenceArgument *language.CallArgument
-	for index := range call.Arguments {
-		argument := call.Arguments[index]
-		switch argument.Name {
-		case "":
-			if evidenceArgument != nil {
-				c.error(argument.Span, "taste.check accepts one evidence argument")
-				return nil, options, false
-			}
-			evidenceArgument = &call.Arguments[index]
-		case "escalate_after":
-			value, ok := c.positiveInteger(argument, "escalate_after")
-			if !ok {
-				return nil, options, false
-			}
-			options.escalateAfter = value
-		case "audit":
-			value, ok := c.positiveInteger(argument, "audit")
-			if !ok {
-				return nil, options, false
-			}
-			options.auditRate = value
-		default:
-			c.error(argument.Span, fmt.Sprintf("taste.check does not accept argument %q", argument.Name))
-			return nil, options, false
-		}
-	}
-	if evidenceArgument == nil {
-		c.error(judge.Span, "taste.check accepts one evidence argument")
-		return nil, options, false
-	}
-	var sources []language.Expr
-	switch value := evidenceArgument.Value.(type) {
-	case *language.Literal:
-		sources = []language.Expr{value}
-	case *language.List:
-		if len(value.Values) == 0 {
-			c.error(value.Span, "taste.check requires at least one evidence command")
-			return nil, options, false
-		}
-		sources = value.Values
-	default:
-		c.error(evidenceArgument.Span, "taste.check evidence must be a static command or list of commands")
-		return nil, options, false
-	}
-	evidence := make([]ir.Expression, 0, len(sources))
-	for _, source := range sources {
-		literal, ok := source.(*language.Literal)
-		// Evidence is gathered by the parent from statically declared commands.
-		// A computed command would let the work under review choose what the
-		// observer is allowed to see.
-		if !ok || literal.Kind != "string" || strings.TrimSpace(literal.Value) == "" {
-			c.error(source.NodeSpan(), "evidence must be a non-empty string literal so it is reviewable before the run starts")
-			return nil, options, false
-		}
-		evidence = append(evidence, c.compileExpression(source))
-	}
-	return evidence, options, true
-}
-
-const defaultEscalateAfter = 3
-
-func (c *compiler) positiveInteger(argument language.CallArgument, name string) (int, bool) {
-	literal, ok := argument.Value.(*language.Literal)
-	if !ok || literal.Kind != "number" {
-		c.error(argument.Span, name+" requires a positive integer literal")
-		return 0, false
-	}
-	value, err := strconv.Atoi(strings.ReplaceAll(literal.Value, "_", ""))
-	if err != nil || value <= 0 {
-		c.error(argument.Span, name+" requires a positive integer literal")
-		return 0, false
-	}
-	return value, true
-}
-
-// observerMachine synthesizes the program the observer subagent runs. Its
-// allow-list is the enforcement: the observer may run Hamster commands and
-// nothing else, so it can read the profile and the evidence and record a
-// verdict, but it structurally cannot edit code or run the test suite.
+// observerMachine synthesizes the program the observer subagent runs. It may
+// investigate the workspace as a reviewer would, but it cannot patch the work
+// it is judging, and it cannot finish without recording a cited verdict.
 func (c *compiler) observerMachine(judge *language.Judge) *ir.Machine {
 	machine := &ir.Machine{
 		ID: fmt.Sprintf("machine_%d", c.nextMachine), Kind: ir.LoopGoal,
-		Name: "observer:" + judge.Name, Span: judge.Span,
+		Name: "observer", Span: judge.Span,
 	}
 	c.nextMachine++
-	literal := func(value string) ir.Expression {
-		return ir.Expression{Kind: ir.ExpressionLiteral, ValueKind: "string", Value: value, Span: judge.Span}
+	identifier := func(name string) ir.Expression {
+		return ir.Expression{Kind: ir.ExpressionIdentifier, Name: name, Span: judge.Span}
 	}
 	recorded := ir.Expression{
 		Kind: ir.ExpressionCall, Span: judge.Span,
-		Callee: &ir.Expression{
-			Kind: ir.ExpressionMember, Name: "recorded", Span: judge.Span,
-			Receiver: &ir.Expression{Kind: ir.ExpressionIdentifier, Name: "judge", Span: judge.Span},
-		},
+		Callee: &ir.Expression{Kind: ir.ExpressionMember, Name: "recorded", Span: judge.Span,
+			Receiver: &ir.Expression{Kind: ir.ExpressionIdentifier, Name: "judge", Span: judge.Span}},
 	}
 	machine.States = []ir.State{
-		// Time is the only bound that matters here. An observer that never
-		// speaks must not hang the parent, and its silence becomes an
-		// abstention rather than a guess.
+		// Time is the only bound that matters. An observer that never speaks
+		// must not hold its parent, and its silence becomes an abstention.
 		{Kind: ir.StateLimit, Executor: ir.ExecutorControl, Name: "time",
-			Limit: &ir.Limit{Kind: "time", Value: literal(observerDeadline)}, Span: judge.Span},
+			Limit: &ir.Limit{Kind: "time", Value: ir.Expression{Kind: ir.ExpressionLiteral, ValueKind: "string", Value: observerDeadline, Span: judge.Span}}, Span: judge.Span},
 		{Kind: ir.StatePolicy, Executor: ir.ExecutorControl, Name: "allow",
-			Policy: &ir.Policy{Allow: true, Value: ir.Expression{Kind: ir.ExpressionIdentifier, Name: "hamster", Span: judge.Span}}, Span: judge.Span},
+			Policy: &ir.Policy{Allow: true, Value: identifier("bash")}, Span: judge.Span},
+		{Kind: ir.StatePolicy, Executor: ir.ExecutorControl, Name: "allow",
+			Policy: &ir.Policy{Allow: true, Value: identifier("hamster")}, Span: judge.Span},
+		{Kind: ir.StatePolicy, Executor: ir.ExecutorControl, Name: "disallow",
+			Policy: &ir.Policy{Allow: false, Value: identifier("apply_patch")}, Span: judge.Span},
 		{Kind: ir.StateAgentWork, Executor: ir.ExecutorAgent, Name: "observe", Span: judge.Span},
 		{Kind: ir.StateVerify, Executor: ir.ExecutorRuntime, Name: "spoke", Expression: &recorded, Span: judge.Span},
 	}
@@ -584,4 +446,117 @@ func (c *compiler) compileExpression(expression language.Expr) ir.Expression {
 
 func (c *compiler) error(span language.Span, message string) {
 	c.diagnostics = append(c.diagnostics, language.Diagnostic{Span: span, Message: message})
+}
+
+// bindings collects every name this loop makes available. Steps, verifiers, a
+// foreach binding, and the handles the compiler generates for its own control
+// flow are the only things an expression may refer to.
+func (c *compiler) bindings(goal *language.Goal, inherited map[string]bool) map[string]bool {
+	scope := map[string]bool{}
+	for name := range inherited {
+		scope[name] = true
+	}
+	for _, statement := range goal.Statements {
+		if node, ok := statement.(*language.Verify); ok {
+			scope[node.Name] = true
+		}
+	}
+	if goal.Flow != nil {
+		collectStepNames(goal.Flow.Statements, scope)
+	}
+	return scope
+}
+
+func collectStepNames(statements []language.Statement, scope map[string]bool) {
+	for _, statement := range statements {
+		switch node := statement.(type) {
+		case *language.Step:
+			scope[node.Name] = true
+		case *language.If:
+			collectStepNames(node.Statements, scope)
+		}
+	}
+}
+
+// validateReferences reports a name no binding in scope could satisfy. Without
+// it a stale reference compiles cleanly and fails at the very end of a run, as
+// an internal evaluator error rather than the typo it is.
+func (c *compiler) validateReferences(machine *ir.Machine, scope map[string]bool) {
+	// Only the handles the compiler generated for its own control flow join the
+	// scope. Internal state names are not bindings and must not appear in a
+	// diagnostic that tells you what you may refer to.
+	for index := range machine.States {
+		if name := machine.States[index].Name; strings.HasPrefix(name, "__") {
+			scope[name] = true
+		}
+	}
+	for index := range machine.States {
+		state := &machine.States[index]
+		if state.Kind == ir.StatePolicy || state.Kind == ir.StateLimit || state.Expression == nil {
+			continue
+		}
+		c.checkExpression(*state.Expression, scope)
+	}
+	if machine.Return != nil {
+		c.checkExpression(*machine.Return, scope)
+	}
+	if machine.Foreach != nil {
+		c.checkExpression(machine.Foreach.Sequence, scope)
+	}
+}
+
+func (c *compiler) checkExpression(expression ir.Expression, scope map[string]bool) {
+	switch expression.Kind {
+	case ir.ExpressionIdentifier:
+		if !scope[expression.Name] {
+			c.error(expression.Span, fmt.Sprintf("unknown name %q; %s", expression.Name, describeScope(scope)))
+		}
+	case ir.ExpressionMember:
+		if expression.Receiver != nil {
+			c.checkExpression(*expression.Receiver, scope)
+		}
+	case ir.ExpressionCall:
+		// The callee of a call is a builtin path such as bash.check, not a
+		// binding, so only the arguments can refer to one.
+		for _, argument := range expression.Arguments {
+			c.checkExpression(argument.Value, scope)
+		}
+	case ir.ExpressionBinary:
+		if expression.Left != nil {
+			c.checkExpression(*expression.Left, scope)
+		}
+		if expression.Right != nil {
+			c.checkExpression(*expression.Right, scope)
+		}
+	case ir.ExpressionUnary:
+		if expression.Operand != nil {
+			c.checkExpression(*expression.Operand, scope)
+		}
+	case ir.ExpressionList:
+		for _, element := range expression.Elements {
+			c.checkExpression(element, scope)
+		}
+	}
+}
+
+func describeScope(scope map[string]bool) string {
+	names := make([]string, 0, len(scope))
+	for name := range scope {
+		if !strings.HasPrefix(name, "__") && name != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return "this loop binds no names"
+	}
+	sort.Strings(names)
+	return "this loop binds " + strings.Join(names, ", ")
+}
+
+func foreachScope(inherited map[string]bool, binding string) map[string]bool {
+	scope := map[string]bool{binding: true}
+	for name := range inherited {
+		scope[name] = true
+	}
+	return scope
 }

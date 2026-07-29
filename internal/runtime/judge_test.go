@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"hamster/internal/hook"
@@ -11,10 +12,10 @@ import (
 
 const judgedLoop = `goal {
   verify built = bash.check("true");
-  return naming;
+  return true;
 } with flow {
   step ran = bash.run("go build ./...");
-  judge naming = taste.check("git diff -- *.go");
+  judge "the new names match the package";
 }`
 
 func judgeRunner(t *testing.T, source string) (*Runner, *store.Run, string) {
@@ -96,12 +97,12 @@ func judgeStateID(t *testing.T, run *store.Run) string {
 // The observer is a different agent running a different program. Exec clears the
 // working agent's context, which is what stops the reasoning that produced the
 // work from contaminating the judgement of it.
-func TestObserverRunsACleanProgramWithFrozenEvidence(t *testing.T) {
+func TestObserverRunsACleanProgram(t *testing.T) {
 	runner, run, root := judgeRunner(t, judgedLoop)
 	ratify(t, runner, root, "naming", "Exported names must read like the rest of the package.")
 	observer, judgement := driveToObserver(t, runner, run)
 
-	if observer.Machine.Name != "observer:naming" {
+	if observer.Machine.Name != "observer" {
 		t.Fatalf("observer machine = %q, want the synthesized observer", observer.Machine.Name)
 	}
 	if len(observer.Stack) != 0 {
@@ -119,13 +120,13 @@ func TestObserverRunsACleanProgramWithFrozenEvidence(t *testing.T) {
 		}
 	}
 
-	// The evidence was captured by the parent before the fork, so the observer
-	// reads a fixed snapshot instead of choosing what to look at.
-	if len(judgement.Evidence) != 1 || judgement.Evidence[0].Output != "+func DoTheThing() error {" {
-		t.Fatalf("evidence = %#v", judgement.Evidence)
+	// The observer is given the ratified standards and the question, and looks
+	// at the workspace itself for everything else.
+	if !strings.Contains(judgement.Clause, "Exported names must read like the rest of the package.") {
+		t.Fatalf("standards = %q", judgement.Clause)
 	}
-	if judgement.Clause != "Exported names must read like the rest of the package." {
-		t.Fatalf("clause = %q", judgement.Clause)
+	if judgement.Question != "the new names match the package" {
+		t.Fatalf("question = %q", judgement.Question)
 	}
 
 	bound, err := runner.store.FindObservedJudgement(context.Background(), observer.ID)
@@ -154,12 +155,12 @@ func TestPassingVerdictAdvancesTheParent(t *testing.T) {
 	if parent.Status != "complete" {
 		t.Fatalf("parent = %s at %s, want complete", parent.Status, parent.StateID)
 	}
-	var result map[string]any
-	if err := json.Unmarshal(parent.Result, &result); err != nil {
+	judgement, err := runner.store.FindObservedJudgement(ctx, observer.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if result["verdict"] != store.VerdictPass || result["citation"] != "reads like the package" {
-		t.Fatalf("result = %v", result)
+	if judgement.Verdict != store.VerdictPass || judgement.Citation != "reads like the package" {
+		t.Fatalf("judgement = %#v", judgement)
 	}
 }
 

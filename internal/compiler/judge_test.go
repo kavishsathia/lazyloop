@@ -12,7 +12,7 @@ const judgedFlow = `goal {
   return passed;
 } with flow {
   step ran = bash.run("go build ./...");
-  judge naming = taste.check("git diff -- *.go");
+  judge "the new names match the package";
 }`
 
 // A judge is not a runtime instruction. It desugars into process primitives, and
@@ -58,9 +58,10 @@ func TestJudgeDesugarsIntoProcessPrimitives(t *testing.T) {
 	}
 }
 
-// The observer's allow-list is the enforcement. It may run Hamster commands and
-// nothing else, so it structurally cannot edit the work it is judging.
-func TestObserverMachineCannotTouchTheWork(t *testing.T) {
+// A reviewer who can only see what it was handed is a weak reviewer, so the
+// observer investigates the workspace itself. What it must not do is change the
+// work it is judging.
+func TestObserverMayInvestigateButNotEdit(t *testing.T) {
 	machine := compileSource(t, judgedFlow).Machines[0]
 	var observer *ir.Machine
 	for _, state := range machine.States {
@@ -71,14 +72,22 @@ func TestObserverMachineCannotTouchTheWork(t *testing.T) {
 	if observer == nil {
 		t.Fatal("no observer machine was synthesized")
 	}
-	allowed := []string{}
+	allowed, denied := map[string]bool{}, map[string]bool{}
 	for _, state := range observer.States {
-		if state.Kind == ir.StatePolicy && state.Policy != nil && state.Policy.Allow {
-			allowed = append(allowed, state.Policy.Value.Name)
+		if state.Kind != ir.StatePolicy || state.Policy == nil {
+			continue
+		}
+		if state.Policy.Allow {
+			allowed[state.Policy.Value.Name] = true
+		} else {
+			denied[state.Policy.Value.Name] = true
 		}
 	}
-	if len(allowed) != 1 || allowed[0] != "hamster" {
-		t.Fatalf("observer allow-list = %v, want exactly [hamster]", allowed)
+	if !allowed["bash"] || !allowed["hamster"] {
+		t.Fatalf("an observer that cannot look around cannot review: allowed = %v", allowed)
+	}
+	if !denied["apply_patch"] {
+		t.Fatalf("an observer must not patch the work it judges: denied = %v", denied)
 	}
 	// Silence must not hang the parent, so the observer is time-bounded and its
 	// silence becomes an abstention rather than a guess.
@@ -100,36 +109,6 @@ func TestObserverMachineCannotTouchTheWork(t *testing.T) {
 	}
 }
 
-func TestCompileRejectsUnjudgeableRequests(t *testing.T) {
-	cases := []struct {
-		flow    string
-		message string
-	}{
-		{`judge n = user.approve("ok?");`, "judge requires taste.check"},
-		{`judge n = taste.check(ran);`, "static command or list"},
-		{`judge n = taste.check([]);`, "at least one evidence command"},
-		{`judge n = taste.check("a", "b");`, "one evidence argument"},
-		{`judge n = taste.check("   ");`, "non-empty string literal"},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.message, func(t *testing.T) {
-			diagnostics := compileDiagnostics(t, `goal {
-  verify passed = bash.check("true");
-  return passed;
-} with flow {
-  step ran = bash.run("true");
-  `+testCase.flow+`
-}`)
-			if len(diagnostics) == 0 {
-				t.Fatal("expected a diagnostic")
-			}
-			if !strings.Contains(diagnostics.Error(), testCase.message) {
-				t.Fatalf("diagnostics = %v, want %q", diagnostics, testCase.message)
-			}
-		})
-	}
-}
-
 func TestJudgementBudgetIsSeparateFromAttention(t *testing.T) {
 	machine := compileSource(t, `goal {
   limit traps 2;
@@ -138,7 +117,7 @@ func TestJudgementBudgetIsSeparateFromAttention(t *testing.T) {
   return passed;
 } with flow {
   step ran = bash.run("true");
-  judge naming = taste.check("git diff");
+  judge "the new names match the package";
 }`).Machines[0]
 	kinds := map[string]bool{}
 	for _, state := range machine.States {
@@ -157,5 +136,51 @@ func TestJudgementBudgetIsSeparateFromAttention(t *testing.T) {
 }`)
 	if len(diagnostics) == 0 || !strings.Contains(diagnostics.Error(), "limit judgements requires a positive integer") {
 		t.Fatalf("diagnostics = %v", diagnostics)
+	}
+}
+
+// A judge in a goal body used to be parsed and then silently dropped, so a loop
+// looked like it was judging while nothing judged anything.
+func TestGoalBodyJudgeIsNotSilentlyDropped(t *testing.T) {
+	machine := compileSource(t, `goal {
+  verify exists = bash.check("test -f NOTES.md");
+  judge "the notes read plainly";
+  return exists;
+}`).Machines[0]
+	kinds := map[ir.StateKind]bool{}
+	for _, state := range machine.States {
+		kinds[state.Kind] = true
+	}
+	for _, required := range []ir.StateKind{ir.StateJudge, ir.StateFork, ir.StateExec, ir.StateWait, ir.StateVerdict} {
+		if !kinds[required] {
+			t.Fatalf("a goal-body judge did not emit %s: %v", required, kinds)
+		}
+	}
+}
+
+// A name nothing binds is a typo, and it must be caught while you are looking at
+// the editor rather than as an evaluator error at the very end of a run.
+func TestUnknownNamesAreRejectedWhereverTheyAppear(t *testing.T) {
+	cases := map[string]string{
+		`goal { verify ok = bash.check("true"); return shipped; }`:                             "shipped",
+		`goal { verify ok = bash.check("true"); return ok; } with flow { wait ghost; }`:        "ghost",
+		`goal { verify ok = bash.check("true"); return ok; } with flow { if absent.child {} }`: "absent",
+		`goal { verify ok = missing; return ok; }`:                                             "missing",
+	}
+	for source, name := range cases {
+		diagnostics := compileDiagnostics(t, source)
+		if len(diagnostics) == 0 || !strings.Contains(diagnostics.Error(), `unknown name "`+name+`"`) {
+			t.Fatalf("%s -> diagnostics = %v, want unknown name %q", source, diagnostics, name)
+		}
+	}
+
+	// Capability names in a policy are not bindings and must not be flagged.
+	if diagnostics := compileDiagnostics(t, `goal {
+  allow bash;
+  disallow apply_patch;
+  verify ok = bash.check("true");
+  return ok;
+}`); len(diagnostics) > 0 {
+		t.Fatalf("policy capabilities were treated as bindings: %v", diagnostics)
 	}
 }

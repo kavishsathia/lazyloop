@@ -15,7 +15,7 @@ const approvalLoop = `goal {
   return exists;
 } with flow {
   step action = bash.run("touch marker");
-  trap shipped = user.approve("Does this look right?");
+  trap "Does this look right?";
 }`
 
 func openTrap(t *testing.T, runner *Runner, runID string) store.Trap {
@@ -175,10 +175,10 @@ func TestSelectionTrapBindsTheChosenOption(t *testing.T) {
 	ctx := context.Background()
 	runner, run, root := runtimeRun(t, `goal {
   verify exists = bash.check("test -f marker");
-  return style;
+  return true;
 } with flow {
   step action = bash.run("touch marker");
-  trap style = user.select("Which error style?", options: ["result", "sentinel"]);
+  trap "Which error style?" ["result", "sentinel"];
 }`)
 	if _, err := runner.Start(ctx, run.ID); err != nil {
 		t.Fatal(err)
@@ -204,8 +204,12 @@ func TestSelectionTrapBindsTheChosenOption(t *testing.T) {
 	if resumed.Status != "complete" {
 		t.Fatalf("status = %s, want complete", resumed.Status)
 	}
-	if string(resumed.Result) != `{"choice":"sentinel","note":"","resolution":"sentinel"}` {
-		t.Fatalf("result = %s", resumed.Result)
+	traps, err := runner.store.ListOpenTraps(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(traps) != 0 {
+		t.Fatalf("the answered selection is still open: %#v", traps)
 	}
 }
 
@@ -213,10 +217,10 @@ func TestSelectionTrapRejectsAnUndeclaredOption(t *testing.T) {
 	ctx := context.Background()
 	runner, run, root := runtimeRun(t, `goal {
   verify exists = bash.check("test -f marker");
-  return style;
+  return true;
 } with flow {
   step action = bash.run("touch marker");
-  trap style = user.select("Which error style?", options: ["result", "sentinel"]);
+  trap "Which error style?" ["result", "sentinel"];
 }`)
 	if _, err := runner.Start(ctx, run.ID); err != nil {
 		t.Fatal(err)
@@ -235,8 +239,8 @@ func TestSelectionTrapRejectsAnUndeclaredOption(t *testing.T) {
 
 const gatedGoal = `goal {
   verify exists = bash.check("test -f marker");
-  trap shipped = user.approve("Is this done?");
-  return shipped;
+  trap "Is this done?";
+  return true;
 }`
 
 // The whole point of a goal trap: the machine cannot certify itself complete.
@@ -278,8 +282,8 @@ func TestGoalTrapGatesCompletion(t *testing.T) {
 func TestJudgementOnlyGoalRunsAndCompletes(t *testing.T) {
 	ctx := context.Background()
 	runner, run, _ := runtimeRun(t, `goal {
-  trap reads_well = user.approve("Is this poem any good?");
-  return reads_well;
+  trap "Is this poem any good?";
+  return true;
 }`)
 	if _, err := runner.Start(ctx, run.ID); err != nil {
 		t.Fatal(err)
@@ -425,7 +429,7 @@ func TestTrapBudgetFailsClosed(t *testing.T) {
   return exists;
 } with flow {
   step action = bash.run("touch marker");
-  trap shipped = user.approve("Does this look right?");
+  trap "Does this look right?";
 }`)
 	if _, err := runner.Start(ctx, run.ID); err != nil {
 		t.Fatal(err)

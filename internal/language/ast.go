@@ -81,19 +81,18 @@ func (v *Verify) statementNode() {}
 // the only statement whose resolution Hamster cannot compute for itself.
 type Trap struct {
 	Span    Span   `json:"span"`
-	Name    string `json:"name"`
-	Request Expr   `json:"request"`
+	Prompt  string `json:"prompt"`
+	Options []Expr `json:"options,omitempty"`
 }
 
 func (t *Trap) NodeSpan() Span { return t.Span }
 func (t *Trap) statementNode() {}
 
-// Judge delegates a subjective check to a constrained observer that applies a
-// ratified taste clause. It is the automated counterpart of Trap.
+// Judge delegates a subjective check to a separate observer that applies the
+// ratified taste profile. It is the automated counterpart of Trap.
 type Judge struct {
-	Span    Span   `json:"span"`
-	Name    string `json:"name"`
-	Request Expr   `json:"request"`
+	Span   Span   `json:"span"`
+	Prompt string `json:"prompt"`
 }
 
 func (j *Judge) NodeSpan() Span { return j.Span }

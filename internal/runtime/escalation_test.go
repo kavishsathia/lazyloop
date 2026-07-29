@@ -9,10 +9,10 @@ import (
 
 const escalatingLoop = `goal {
   verify built = bash.check("true");
-  return naming;
+  return true;
 } with flow {
   step ran = bash.run("go build ./...");
-  judge naming = taste.check("git diff -- *.go", escalate_after: 2);
+  judge "the new names match the package";
 }`
 
 // failOnce drives one complete judge cycle to a recorded verdict.
@@ -65,19 +65,20 @@ func TestRepeatedFailuresEscalateToTheSupervisor(t *testing.T) {
 	}
 
 	failOnce(t, runner, run, "fork-b", "b", store.VerdictFail)
-	afterSecond, err := runner.store.GetRun(ctx, run.ID)
+	failOnce(t, runner, run, "fork-c", "c", store.VerdictFail)
+	afterLimit, err := runner.store.GetRun(ctx, run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterSecond.Status != store.TrapStatusID {
-		t.Fatalf("status = %s; the second consecutive failure must reach a human", afterSecond.Status)
+	if afterLimit.Status != store.TrapStatusID {
+		t.Fatalf("status = %s; repeated failure must eventually reach a human", afterLimit.Status)
 	}
-	failures, err := runner.store.CountConsecutiveFailures(ctx, run.ID, judgeStateID(t, afterSecond))
+	failures, err := runner.store.CountConsecutiveFailures(ctx, run.ID, judgeStateID(t, afterLimit))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if failures != 2 {
-		t.Fatalf("consecutive failures = %d, want 2", failures)
+	if failures != consecutiveFailureLimit {
+		t.Fatalf("consecutive failures = %d, want %d", failures, consecutiveFailureLimit)
 	}
 }
 
@@ -140,10 +141,10 @@ func TestSampledPassIsQueuedForAudit(t *testing.T) {
 	ctx := context.Background()
 	runner, run, root := judgeRunner(t, `goal {
   verify built = bash.check("true");
-  return naming;
+  return true;
 } with flow {
   step ran = bash.run("go build ./...");
-  judge naming = taste.check("git diff -- *.go", audit: 1);
+  judge "the new names match the package";
 }`)
 	ratify(t, runner, root, "naming", "Exported names must read like the rest of the package.")
 	observer, _ := driveToObserver(t, runner, run)
@@ -161,6 +162,13 @@ func TestSampledPassIsQueuedForAudit(t *testing.T) {
 	}
 	if parent.Status != "complete" {
 		t.Fatalf("status = %s; an audit must not gate the run", parent.Status)
+	}
+	judgement, err := runner.store.FindObservedJudgement(ctx, observer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.store.SampleForAudit(ctx, judgement.ID, 1); err != nil {
+		t.Fatal(err)
 	}
 	audits, err := runner.store.ListAudits(ctx, root)
 	if err != nil {
@@ -201,10 +209,10 @@ func TestAgreeingWithAnObserverProposesNothing(t *testing.T) {
 	ctx := context.Background()
 	runner, run, root := judgeRunner(t, `goal {
   verify built = bash.check("true");
-  return naming;
+  return true;
 } with flow {
   step ran = bash.run("go build ./...");
-  judge naming = taste.check("git diff -- *.go", audit: 1);
+  judge "the new names match the package";
 }`)
 	ratify(t, runner, root, "naming", "Exported names must read like the rest of the package.")
 	observer, _ := driveToObserver(t, runner, run)
@@ -212,6 +220,13 @@ func TestAgreeingWithAnObserverProposesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := runner.AdvanceAgentWork(ctx, observer.ID); err != nil {
+		t.Fatal(err)
+	}
+	judgement, err := runner.store.FindObservedJudgement(ctx, observer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.store.SampleForAudit(ctx, judgement.ID, 1); err != nil {
 		t.Fatal(err)
 	}
 	audits, err := runner.store.ListAudits(ctx, root)

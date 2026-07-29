@@ -163,10 +163,10 @@ func TestSelectionIsAnsweredByChoosingADeclaredOption(t *testing.T) {
 	ctx := context.Background()
 	runner, run, _ := trapped(t, `goal {
   verify exists = bash.check("test -f marker");
-  return style;
+  return true;
 } with flow {
   step action = bash.run("touch marker");
-  trap style = user.select("Which error style?", options: ["result", "sentinel"]);
+  trap "Which error style?" ["result", "sentinel"];
 }`)
 	if _, err := runner.HandleUserPrompt(ctx, promptEvent("choose panic")); err != nil {
 		t.Fatal(err)

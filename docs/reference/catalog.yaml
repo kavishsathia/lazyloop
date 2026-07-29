@@ -193,7 +193,7 @@ entries:
     since: 0.1.0
     stability: experimental
     summary: Suspends the run and transfers control to the supervising human for a decision Hamster cannot compute.
-    syntax: ['trap name = user.approve("question");', 'trap name = user.select("question", options: [a, b]);']
+    syntax: ['trap "question";', 'trap "question" ["option", "option"];']
     semantics:
       - A trap is the subjective counterpart of verify; verify asks the machine, trap asks the person.
       - In a goal a trap is a completion gate on the verifier ladder, so the machine cannot certify itself done. In a flow it is a checkpoint between steps.
@@ -202,10 +202,10 @@ entries:
       - Reaching a trap suspends the run with status trapped and denies every agent tool call until it is resolved.
       - Resolution is reserved for a supervisor outside Codex; the running agent is denied hamster resolve.
       - An approved trap advances the flow. A rejected trap re-derives the work from the machine's initial state, exactly like a failed verifier, so a verdict costs a re-run and never a rewrite.
-      - The prompt must be a static string literal and a selection's options must be a static list, so every question is reviewable before the run starts.
+      - The question is written out in the source, so it is reviewable before the run starts.
       - Supervisor attention is budgeted with limit traps; a run that would exceed its declared budget fails closed.
     preconditions:
-      - predicate: request is user.approve or user.select
+      - predicate: a selection offers at least two written-out options
         description: Hamster only emits a trap whose answer space it can validate a verdict against.
         checked: compiler
     postconditions:
@@ -228,11 +228,11 @@ entries:
       - title: Approval gate
         language: hamster
         test: parse
-        source: 'goal { verify done = true; } with flow { step build = bash.run("make"); trap shipped = user.approve("Does this build look right?"); }'
+        source: 'goal { verify done = true; } with flow { step build = bash.run("make"); trap "Does this build look right?"; }'
       - title: Choose between forked results
         language: hamster
         test: parse
-        source: 'goal { verify done = true; } with flow { step alpha = fork; if alpha.child { exec style-alpha; } wait alpha; trap style = user.select("Which error style?", options: ["result", "sentinel"]); }'
+        source: 'goal { verify done = true; } with flow { step alpha = fork; if alpha.child { exec style-alpha; } wait alpha; trap "Which error style?" ["result", "sentinel"]; }'
     related: [statement.verify, statement.limit, process.fork, command.traps]
 
   - id: command.taste
@@ -290,22 +290,22 @@ entries:
     since: 0.1.0
     stability: experimental
     summary: Delegates a subjective check to a constrained observer that applies one ratified taste clause.
-    syntax: ['judge name = taste.check("command");', 'judge name = taste.check(["command", "command"], escalate_after: 2, audit: 20);']
+    syntax: ['judge "what the observer should validate";']
     semantics:
-      - The judge name is the taste clause it applies. A clause the supervisor has not ratified gives the observer no standing, so the judgement escalates to a trap instead of being guessed at.
+      - The observer applies the whole ratified taste profile. A workspace with no adopted taste gives it no standing, so the judgement escalates to a trap instead of being guessed at.
       - There is no judge instruction in the runtime. A judge desugars to fork, exec, wait, and a verdict dispatch, so the observer is a separate agent with a cleared context and an allow-list it cannot escape.
       - The observer may run Hamster commands and nothing else. It structurally cannot edit code, run tests, or spawn further agents.
-      - Evidence is gathered by the parent from statically declared commands and frozen before the fork, so the observer cannot choose what to look at and the work under review cannot choose what it is shown.
+      - The observer investigates the workspace as a reviewer would, but it may not patch the work it is judging.
       - A verdict is three-valued. Pass advances, fail re-derives the work like any failed gate, and abstain transfers control to the supervisor.
       - A pass or fail without a citation is coerced to an abstention, so an unsupported opinion escalates to a human rather than passing as taste.
       - An observer answers once. A recorded verdict is immutable, and an observer that never speaks times out and abstains rather than hanging the parent.
       - limit judgements bounds the money observers cost, which is a different resource from the attention limit traps bounds.
-      - escalate_after bounds consecutive failures before the question becomes a human's, defaulting to 3. Not every taste failure is one the agent can perceive, so repeating it spends attempts without converging.
-      - audit samples one in N passing verdicts for human spot-checking. An audit questions the judge rather than the work and never blocks the run.
+      - Repeated failure of the same judgement becomes a human's question. Not every taste failure is one the agent can perceive, so repeating it spends attempts without converging.
+      - A sample of passing verdicts is set aside for human spot-checking. An audit questions the judge rather than the work and never blocks the run.
       - Resolving an escalated trap, or flagging an audit, records the supervisor's reasoning as a draft refinement of the clause. The standing profile still only changes when a human adopts it.
     preconditions:
-      - predicate: a ratified clause of the same name exists
-        description: An observer applies the supervisor's standard and has none of its own.
+      - predicate: the workspace has ratified taste
+        description: An observer applies the supervisor's standards and has none of its own.
         checked: runtime
     postconditions:
       - predicate: the observer cannot modify the work it judges
@@ -317,9 +317,9 @@ entries:
         guarantee: enforced
         evidence: persisted verdict and trap record
     failures:
-      - code: judge_unratified_clause
-        when: No ratified taste clause matches the judge name.
-        remediation: Record and ratify the clause, or answer the escalated trap directly.
+      - code: judge_without_standards
+        when: The workspace has no ratified taste for an observer to apply.
+        remediation: Record and ratify a clause, or answer the escalated trap directly.
       - code: judgement_budget_exhausted
         when: The run would open more judgements than limit judgements declares.
         remediation: Raise the budget or reduce the number of judged points.
@@ -327,7 +327,7 @@ entries:
       - title: Judge naming against the ratified profile
         language: hamster
         test: parse
-        source: 'goal { verify tests = bash.check("go test ./..."); } with flow { step build = bash.run("go build ./..."); judge naming = taste.check("git diff -- *.go"); }'
+        source: 'goal { verify tests = bash.check("go test ./..."); } with flow { step build = bash.run("go build ./..."); judge "the new names match the package"; }'
     related: [statement.trap, statement.verify, command.taste, command.audits, process.fork]
 
   - id: command.audits

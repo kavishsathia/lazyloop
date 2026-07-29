@@ -3,6 +3,7 @@ package language
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 type parser struct {
@@ -155,18 +156,23 @@ func (p *parser) parseStatement(loopKind TokenKind) Statement {
 		return &Wait{Span: Span{Start: start, End: end.Span.End}, Target: target}
 	case TokenTrap:
 		p.advance()
-		name := p.consume(TokenIdentifier, "expected trap name")
-		p.consume(TokenAssign, "expected '=' after trap name")
-		request := p.parseExpression()
+		prompt := p.consumeQuestion("trap")
+		// A trap offering choices reads as one statement, not a call: the
+		// options are part of the question being asked.
+		var options []Expr
+		if p.at(TokenLBracket) {
+			list, _ := p.parsePrimary().(*List)
+			if list != nil {
+				options = list.Values
+			}
+		}
 		end := p.consume(TokenSemicolon, "expected ';' after trap")
-		return &Trap{Span: Span{Start: start, End: end.Span.End}, Name: name.Lexeme, Request: request}
+		return &Trap{Span: Span{Start: start, End: end.Span.End}, Prompt: prompt, Options: options}
 	case TokenJudge:
 		p.advance()
-		name := p.consume(TokenIdentifier, "expected judge name")
-		p.consume(TokenAssign, "expected '=' after judge name")
-		request := p.parseExpression()
+		prompt := p.consumeQuestion("judge")
 		end := p.consume(TokenSemicolon, "expected ';' after judge")
-		return &Judge{Span: Span{Start: start, End: end.Span.End}, Name: name.Lexeme, Request: request}
+		return &Judge{Span: Span{Start: start, End: end.Span.End}, Prompt: prompt}
 	case TokenVerify:
 		p.advance()
 		name := p.consume(TokenIdentifier, "expected verification name")
@@ -194,6 +200,26 @@ func (p *parser) parseStatement(loopKind TokenKind) Statement {
 		p.errorAt(p.peek(), "expected step, if, exec, wait, trap, judge, verify, limit, return, allow, or disallow")
 		return nil
 	}
+}
+
+// consumeQuestion reads the wording of a trap or judge. It must be written out
+// in the source so the question can be reviewed before the run starts.
+func (p *parser) consumeQuestion(kind string) string {
+	token := p.peek()
+	if token.Kind != TokenString {
+		p.errorAt(token, "expected a quoted question after "+kind)
+		return ""
+	}
+	p.advance()
+	value, err := strconv.Unquote(token.Lexeme)
+	if err != nil {
+		p.errorAt(token, "invalid string literal")
+		return ""
+	}
+	if strings.TrimSpace(value) == "" {
+		p.errorAt(token, kind+" requires a question to ask")
+	}
+	return value
 }
 
 func (p *parser) parseExpression() Expr { return p.parseBinary(1) }

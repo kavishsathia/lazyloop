@@ -204,20 +204,12 @@ func handleObserveCommand(ctx context.Context, state *store.Store, event hook.Ev
 		return hook.Decision{}, err
 	}
 	var brief strings.Builder
-	fmt.Fprintf(&brief, "You are judging %q against one ratified clause, and nothing else. ", judgement.Name)
-	fmt.Fprintf(&brief, "You have no aesthetic authority of your own: apply the clause or abstain.\n")
-	if judgement.Question != "" {
-		fmt.Fprintf(&brief, "QUESTION: %s\n", judgement.Question)
-	}
-	fmt.Fprintf(&brief, "CLAUSE: %s\n", judgement.Clause)
-	for _, evidence := range judgement.Evidence {
-		fmt.Fprintf(&brief, "EVIDENCE $ %s\n%s\n", evidence.Command, evidence.Output)
-		if evidence.Error != "" {
-			fmt.Fprintf(&brief, "EVIDENCE ERROR: %s\n", evidence.Error)
-		}
-	}
-	fmt.Fprintf(&brief, "Answer once with hamster verdict --pass|--fail --cite \"the part of the clause you applied\" [--because TEXT], ")
-	fmt.Fprintf(&brief, "or hamster verdict --abstain --because TEXT when the clause does not cover this. Abstaining is correct whenever you would otherwise be guessing.")
+	fmt.Fprintf(&brief, "You are reviewing work you did not do. Judge one thing only: %s\n", judgement.Question)
+	fmt.Fprintf(&brief, "Apply this repository's ratified standards and nothing else. You have no aesthetic authority of your own.\n")
+	fmt.Fprintf(&brief, "STANDARDS:\n%s\n", judgement.Clause)
+	fmt.Fprintf(&brief, "Investigate the workspace however you need to, but you may not change it.\n")
+	fmt.Fprintf(&brief, "Answer once with hamster verdict --pass|--fail --cite \"the standard you applied\" [--because TEXT], ")
+	fmt.Fprintf(&brief, "or hamster verdict --abstain --because TEXT when the standards do not cover this. Abstaining is correct whenever you would otherwise be guessing.")
 	return hook.Decision{Permission: "allow", Tracked: true, RunID: run.ID, Context: brief.String()}, nil
 }
 

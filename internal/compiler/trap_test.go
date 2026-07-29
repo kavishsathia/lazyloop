@@ -35,7 +35,7 @@ func TestCompileTrapIsRuntimeOwnedAndReDerivesOnRejection(t *testing.T) {
   return passed;
 } with flow {
   step ran = bash.run("go test ./...");
-  trap shipped = user.approve("Ship it?");
+  trap "Ship it?";
 }`)
 	machine := program.Machines[0]
 	state := trapState(t, machine)
@@ -45,8 +45,8 @@ func TestCompileTrapIsRuntimeOwnedAndReDerivesOnRejection(t *testing.T) {
 	if state.Trap == nil || state.Trap.Kind != ir.TrapApproval {
 		t.Fatalf("trap = %#v", state.Trap)
 	}
-	if state.Trap.Prompt.Value != "Ship it?" {
-		t.Fatalf("prompt = %q", state.Trap.Prompt.Value)
+	if state.Trap.Prompt != "Ship it?" {
+		t.Fatalf("prompt = %q", state.Trap.Prompt)
 	}
 	if state.OnFailure != machine.InitialState {
 		t.Fatalf("rejection target = %q, want initial state %q", state.OnFailure, machine.InitialState)
@@ -59,70 +59,34 @@ func TestCompileSelectionTrapCapturesClosedOptionSet(t *testing.T) {
   return passed;
 } with flow {
   step ran = bash.run("true");
-  trap style = user.select("Which style?", options: ["result", "sentinel"]);
+  trap "Which style?" ["result", "sentinel"];
 }`)
 	state := trapState(t, program.Machines[0])
 	if state.Trap.Kind != ir.TrapSelection || len(state.Trap.Options) != 2 {
 		t.Fatalf("trap = %#v", state.Trap)
 	}
-	if state.Trap.Options[0].Value != "result" || state.Trap.Options[1].Value != "sentinel" {
+	if state.Trap.Options[0] != "result" || state.Trap.Options[1] != "sentinel" {
 		t.Fatalf("options = %#v", state.Trap.Options)
 	}
 }
 
+// A trap is a statement, so the only thing left to get wrong is offering
+// choices the supervisor cannot actually pick between.
 func TestCompileRejectsUnanswerableTraps(t *testing.T) {
-	cases := []struct {
-		name    string
-		flow    string
-		message string
-	}{
-		{
-			name:    "unknown request",
-			flow:    `trap t = model.assess("Is this good?");`,
-			message: "supported requests are user.approve and user.select",
-		},
-		{
-			name:    "dynamic prompt",
-			flow:    `trap t = user.approve(ran);`,
-			message: "must be a non-empty string literal",
-		},
-		{
-			name:    "selection without options",
-			flow:    `trap t = user.select("Which?");`,
-			message: "user.select requires options",
-		},
-		{
-			name:    "single option",
-			flow:    `trap t = user.select("Which?", options: ["only"]);`,
-			message: "at least two options",
-		},
-		{
-			name:    "options on an approval",
-			flow:    `trap t = user.approve("Ship it?", options: ["a", "b"]);`,
-			message: "options may only be supplied to user.select",
-		},
-		{
-			name:    "not a request at all",
-			flow:    `trap t = "Ship it?";`,
-			message: "trap requires user.approve",
-		},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			diagnostics := compileDiagnostics(t, `goal {
+	for flow, message := range map[string]string{
+		`trap "Which?" ["only"];`:       "at least two options",
+		`trap "Which?" [ran, "other"];`: "written-out strings",
+	} {
+		diagnostics := compileDiagnostics(t, `goal {
   verify passed = bash.check("true");
   return passed;
 } with flow {
   step ran = bash.run("true");
-  `+testCase.flow+`
+  `+flow+`
 }`)
-			if len(diagnostics) == 0 {
-				t.Fatal("expected a diagnostic")
-			}
-			if !strings.Contains(diagnostics.Error(), testCase.message) {
-				t.Fatalf("diagnostics = %v, want %q", diagnostics, testCase.message)
-			}
-		})
+		if len(diagnostics) == 0 || !strings.Contains(diagnostics.Error(), message) {
+			t.Fatalf("%s -> diagnostics = %v, want %q", flow, diagnostics, message)
+		}
 	}
 }
 
@@ -133,7 +97,7 @@ func TestCompileTrapBudgetLimit(t *testing.T) {
   return passed;
 } with flow {
   step ran = bash.run("true");
-  trap shipped = user.approve("Ship it?");
+  trap "Ship it?";
 }`)
 	machine := program.Machines[0]
 	if machine.States[0].Kind != ir.StateLimit || machine.States[0].Limit.Kind != "traps" {
@@ -155,10 +119,10 @@ func TestCompileTrapBudgetLimit(t *testing.T) {
 // never spend a person's attention on work a machine check would have rejected.
 func TestGoalTrapIsEmittedAfterEveryVerifier(t *testing.T) {
 	program := compileSource(t, `goal {
-  trap shipped = user.approve("Ship it?");
+  trap "Ship it?";
   verify tests = bash.check("go test ./...");
   verify vet = bash.check("go vet ./...");
-  return shipped;
+  return true;
 }`)
 	machine := program.Machines[0]
 	kinds := []ir.StateKind{}
@@ -186,8 +150,8 @@ func TestGoalTrapIsEmittedAfterEveryVerifier(t *testing.T) {
 func TestGoalMayBeGatedOnlyByJudgement(t *testing.T) {
 	program := compileSource(t, `goal {
   limit traps 4;
-  trap reads_well = user.approve("Is this poem any good?");
-  return reads_well;
+  trap "Is this poem any good?";
+  return true;
 }`)
 	machine := program.Machines[0]
 	for _, state := range machine.States {
