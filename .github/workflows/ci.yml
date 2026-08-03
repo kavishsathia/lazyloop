@@ -44,7 +44,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@v6.0.9
         with:
           package_json_file: docs/site/package.json
       - name: Set up Node
