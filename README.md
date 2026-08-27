@@ -69,12 +69,11 @@ cd ~/some/project
 lazyloop
 ```
 
-lazyloop is two full screens with a key between them. You start in Codex,
-exactly as it is outside lazyloop — the stock CLI on a pseudo-terminal, its
-own rendering, its own hooks. `ctrl-]` flips to the full-screen dashboard;
-`Tab` flips back. Codex runs the whole time, drawn only while it is the
-screen you are on, so a trap rings the bell even while you are watching it.
-On the dashboard:
+lazyloop is two full screens with a key between them. You land on the
+dashboard; `Tab` flips to Codex — the stock CLI on a pseudo-terminal, its
+own rendering, its own hooks — and `ctrl-]` flips back. Codex runs the whole
+time, drawn only while it is the screen you are on, so a trap rings the bell
+even while you are watching it. On the dashboard:
 
 - `n` arms a loop. Type a command and it becomes "make this pass" under
   default limits; a `.hmstr` path or a literal `goal { … }` compiles as

@@ -68,7 +68,9 @@ type console struct {
 }
 
 func newConsole(backend Backend, token, dir string, hooks Hooks, dirty func()) *console {
-	return &console{backend: backend, token: token, dir: dir, hooks: hooks, now: time.Now, dirty: dirty}
+	// The dashboard is home: you land on lazyloop and flip to the agent when
+	// you want to talk to it.
+	return &console{backend: backend, token: token, dir: dir, hooks: hooks, now: time.Now, dirty: dirty, screen: screenDashboard}
 }
 
 // route takes raw bytes from the person's terminal and returns the bytes the

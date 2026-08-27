@@ -84,18 +84,14 @@ func testConsole(backend Backend) *console {
 	return newConsole(backend, "console", "/repo", Hooks{Installed: true}, func() {})
 }
 
-func TestPrefixFlipsToTheDashboardAndBack(t *testing.T) {
+func TestFlippingBetweenTheDashboardAndTheAgent(t *testing.T) {
 	c := testConsole(&fakeBackend{})
-	// The agent owns the screen at first: keys pass straight through.
-	if got := string(c.route([]byte("hello"))); got != "hello" {
-		t.Fatalf("agent screen forwarded %q", got)
-	}
-	// The prefix flips to the dashboard and stops forwarding.
-	if got := string(c.route([]byte{prefixKey, 'n'})); got != "" {
+	// The dashboard is home: keys act on it and nothing is forwarded.
+	if got := string(c.route([]byte{'n'})); got != "" {
 		t.Fatalf("dashboard forwarded %q", got)
 	}
 	if c.screen != screenDashboard || c.mode != modeLoop {
-		t.Fatalf("after prefix+n: screen %v mode %v", c.screen, c.mode)
+		t.Fatalf("after n: screen %v mode %v", c.screen, c.mode)
 	}
 	// An arrow key inside the editor is swallowed, not typed.
 	c.route([]byte("\x1b[A"))
@@ -107,21 +103,20 @@ func TestPrefixFlipsToTheDashboardAndBack(t *testing.T) {
 	if c.mode != modeKeys || c.line != nil {
 		t.Fatalf("escape did not cancel: mode %v line %q", c.mode, string(c.line))
 	}
-	c.route([]byte{0x1b}) // and again returns to the agent
-	if c.screen != screenAgent {
-		t.Fatal("second escape did not return to the agent")
-	}
-	if got := string(c.route([]byte("q"))); got != "q" {
-		t.Fatalf("q on the agent screen was not forwarded: %q", got)
-	}
-	// Tab from the dashboard flips back to the agent.
-	c.route([]byte{prefixKey})
-	if c.screen != screenDashboard {
-		t.Fatal("prefix did not reach the dashboard")
-	}
+	// Tab flips to the agent, where keys pass straight through.
 	c.route([]byte{'\t'})
 	if c.screen != screenAgent {
 		t.Fatal("tab did not flip to the agent")
+	}
+	if got := string(c.route([]byte("hello"))); got != "hello" {
+		t.Fatalf("agent screen forwarded %q", got)
+	}
+	// The prefix always brings lazyloop back.
+	if got := string(c.route([]byte{prefixKey})); got != "" {
+		t.Fatalf("prefix forwarded %q", got)
+	}
+	if c.screen != screenDashboard {
+		t.Fatal("prefix did not return to the dashboard")
 	}
 }
 

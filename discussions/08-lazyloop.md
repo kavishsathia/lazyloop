@@ -97,8 +97,9 @@ hooks route to a Hamster binary and offers `s` to install them. Any build of
 
 ## Two full screens, not a split
 
-The agent and the dashboard each own the whole terminal; `ctrl-]` shows the
-dashboard, `Tab` returns to the agent. The agent is sized to the full
+The agent and the dashboard each own the whole terminal. You land on the
+dashboard — it is home — and `Tab` flips to the agent, `ctrl-]` back. The
+agent is sized to the full
 terminal and keeps that size while the dashboard is up, so a flip never
 resizes it and never makes it reflow — the flip is instant, and the agent's
 screen survives it untouched in the emulator. This is the background model
