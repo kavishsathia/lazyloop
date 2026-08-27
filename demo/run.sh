@@ -7,7 +7,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 
 echo "Building lazyloop and the demo agent…"
-go build -o /tmp/lazyloop "$root/cmd/lazyloop"
+(cd "$root" && go build -o /tmp/lazyloop ./cmd/lazyloop)
 (cd "$here" && go build -o /tmp/lazyloop-demo-agent ./agent)
 
 # The agent edits ./wheel; start every run from the bugs.
