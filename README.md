@@ -92,10 +92,13 @@ output, the traps. Both right panels scroll.
   loop); select an agent row first, then `ctrl-]`, and `ctrl-]` again returns.
 - `n` opens the loop builder. You compose a loop from one-key recipes and
   the goal panel shows the script forming live: `l` a time limit (minutes),
-  `a` an attempt limit, `m` a machine check (a shell command that must pass),
-  `j` a judge (an agent reviews for what you describe), `t` a trap (a question
-  for you). `⌫` undoes the last recipe; `⏎` starts the loop — which spawns its
-  Codex and hands it the task. It won't start without at least one check.
+  `a` an attempt limit, `m` a machine check, `j` a judge (an agent reviews for
+  what you describe), `t` a trap (a question for you). `m` offers the checks
+  this repo already has — its Go/Cargo/npm commands, its Makefile and Justfile
+  targets, and the commands its CI workflow runs — so you pick one with `↑↓`
+  rather than remember it, or type your own. `⌫` undoes the last recipe; `⏎`
+  starts the loop, which spawns its Codex and hands it the task. It won't start
+  without at least one check.
 - A waiting trap is answered with `a`, `r` (with a note), or an option
   number; the bottom bar shows the question.
 - `d` twice stops the selected loop — killing its Codex and its run, but

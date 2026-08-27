@@ -10,6 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"hamster/internal/detect"
 	"hamster/internal/ir"
 	"hamster/internal/store"
 )
@@ -69,8 +70,10 @@ type console struct {
 	armKill       bool
 	pendingRemove string // a loop id awaiting Enter to confirm removal
 
-	draft  []clause
-	recipe byte // the recipe awaiting its argument, or 0 in the menu
+	draft       []clause
+	recipe      byte // the recipe awaiting its argument, or 0 in the menu
+	suggestions []detect.Check
+	suggestHi   int
 
 	panel           panelFocus
 	loops           []store.LoopSummary
@@ -162,22 +165,35 @@ func (c *console) route(input []byte) []byte {
 				index = end
 				continue
 			}
-			if c.mode == modeKeys && index+2 < len(input) && input[index+1] == '[' {
+			picking := c.mode == modeBuild && c.recipe == 'm'
+			if (c.mode == modeKeys || picking) && index+2 < len(input) && input[index+1] == '[' {
 				switch input[index+2] {
 				case 'A':
-					c.nav(-1)
+					if picking {
+						c.suggestMove(-1)
+					} else {
+						c.nav(-1)
+					}
 					index += 2
 					continue
 				case 'B':
-					c.nav(1)
+					if picking {
+						c.suggestMove(1)
+					} else {
+						c.nav(1)
+					}
 					index += 2
 					continue
 				case 'C':
-					c.cyclePanel(1)
+					if !picking {
+						c.cyclePanel(1)
+					}
 					index += 2
 					continue
 				case 'D':
-					c.cyclePanel(-1)
+					if !picking {
+						c.cyclePanel(-1)
+					}
 					index += 2
 					continue
 				}
@@ -317,6 +333,7 @@ func (c *console) key(r rune) {
 		c.nav(-1)
 	case 'n':
 		c.mode, c.line, c.recipe, c.draft, c.message = modeBuild, nil, 0, nil, ""
+		c.suggestions, c.suggestHi = detect.Detect(c.dir), 0
 	case 'a':
 		c.answer(store.TrapApprove, "")
 	case 'r':
@@ -395,7 +412,9 @@ func (c *console) build(r rune) {
 		return
 	}
 	switch r {
-	case 'l', 'a', 'm', 'j', 't':
+	case 'm':
+		c.recipe, c.line, c.message, c.suggestHi = 'm', nil, "", 0
+	case 'l', 'a', 'j', 't':
 		c.recipe, c.line, c.message = byte(r), nil, ""
 	case '\r', '\n':
 		c.startDraft()
@@ -409,6 +428,9 @@ func (c *console) build(r rune) {
 // commitClause validates a field and appends it to the draft.
 func (c *console) commitClause() {
 	arg := strings.TrimSpace(string(c.line))
+	if c.recipe == 'm' && arg == "" && c.suggestHi < len(c.suggestions) {
+		arg = c.suggestions[c.suggestHi].Command
+	}
 	if c.recipe == 'l' || c.recipe == 'a' {
 		if n, err := strconv.Atoi(arg); err != nil || n <= 0 {
 			c.message = "type a positive number"
@@ -532,6 +554,20 @@ func (c *console) requestQuit() {
 
 func (c *console) cyclePanel(delta int) {
 	c.panel = panelFocus((int(c.panel) + delta + 3) % 3)
+	c.dirty()
+}
+
+func (c *console) suggestMove(delta int) {
+	if len(c.suggestions) == 0 {
+		return
+	}
+	c.suggestHi += delta
+	if c.suggestHi < 0 {
+		c.suggestHi = 0
+	}
+	if c.suggestHi >= len(c.suggestions) {
+		c.suggestHi = len(c.suggestions) - 1
+	}
 	c.dirty()
 }
 

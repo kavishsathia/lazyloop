@@ -153,6 +153,9 @@ func (c *console) renderList(width, height int) []string {
 
 func (c *console) renderSource(width, height int) []string {
 	border := borderFor(c.panel == focusSource)
+	if c.mode == modeBuild && c.recipe == 'm' {
+		return c.renderChecks(width, height)
+	}
 	if c.mode == modeBuild {
 		var body []line
 		for _, raw := range strings.Split(strings.TrimRight(c.draftScript(), "\n"), "\n") {
@@ -175,6 +178,40 @@ func (c *console) renderSource(width, height int) []string {
 		body = append(body, line{raw, style})
 	}
 	return scrollPanel(width, height, "loop", border, body, c.srcScroll)
+}
+
+// renderChecks is the machine-check picker: the commands this repo offers,
+// with the highlighted one committed when the field is left empty.
+func (c *console) renderChecks(width, height int) []string {
+	inner := width - 4
+	typing := strings.TrimSpace(string(c.line)) != ""
+	if len(c.suggestions) == 0 {
+		return scrollPanel(width, height, "checks", borderRun, []line{
+			{"no checks detected here", styleDim},
+			{"type a shell command below", styleKey},
+		}, 0)
+	}
+	body := []line{{"checks in this repo — ↑↓ to pick, or type your own", styleDim}, {"", ""}}
+	for index, check := range c.suggestions {
+		marker := "  "
+		style := ""
+		if index == c.suggestHi {
+			marker = "❯ "
+			if !typing {
+				style = styleFocus
+			} else {
+				style = styleKey
+			}
+		}
+		text := truncateRunes(marker+check.Command, inner-runeLen(check.Source)-1)
+		gap := inner - runeLen(text) - runeLen(check.Source)
+		if gap < 1 {
+			gap = 1
+		}
+		body = append(body, line{text + strings.Repeat(" ", gap) + check.Source, style})
+	}
+	offset := windowOffset(c.suggestHi+2, len(body), height-2)
+	return scrollPanel(width, height, "checks", borderRun, body, offset)
 }
 
 func (c *console) renderLogs(width, height int) []string {

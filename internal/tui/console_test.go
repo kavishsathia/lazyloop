@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"hamster/internal/detect"
 	"hamster/internal/ir"
 	"hamster/internal/store"
 )
@@ -427,5 +428,28 @@ func TestRemoveNeedsConfirmation(t *testing.T) {
 	settle(t, c, func() bool { return c.message == "removed" })
 	if len(backend.removed) != 1 || backend.removed[0] != "l1" || killed != "l1" {
 		t.Fatalf("removed=%v killed=%q", backend.removed, killed)
+	}
+}
+
+func TestMachineCheckPickerCommitsAndFreeTypes(t *testing.T) {
+	backend := &fakeBackend{}
+	c := testConsole(backend)
+	c.mode = modeBuild
+	c.recipe = 'm'
+	c.suggestions = []detect.Check{
+		{Label: "tests", Command: "go test ./...", Source: "go.mod"},
+		{Label: "vet", Command: "go vet ./...", Source: "go.mod"},
+	}
+	// Empty field + a highlighted suggestion commits that suggestion.
+	c.suggestHi = 1
+	c.commitClause()
+	if len(c.draft) != 1 || c.draft[0].kind != 'm' || c.draft[0].arg != "go vet ./..." {
+		t.Fatalf("picked clause = %+v", c.draft)
+	}
+	// Typing a custom command overrides the suggestion.
+	c.recipe, c.line, c.suggestHi = 'm', []rune("make check"), 0
+	c.commitClause()
+	if len(c.draft) != 2 || c.draft[1].arg != "make check" {
+		t.Fatalf("custom clause = %+v", c.draft)
 	}
 }
