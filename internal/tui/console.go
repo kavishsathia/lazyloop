@@ -65,6 +65,10 @@ type console struct {
 	// bell is rung when a trap newly opens, so an escalation reaches a person
 	// who is watching the agent instead of the dashboard. Optional.
 	bell func()
+	// sendAgent types into the agent. Arming a loop uses it to hand the agent
+	// its opening task, so a loop started from the dashboard begins on its own
+	// without the person flipping over to prompt it. Optional.
+	sendAgent func([]byte)
 }
 
 func newConsole(backend Backend, token, dir string, hooks Hooks, dirty func()) *console {
@@ -219,9 +223,44 @@ func (c *console) arm(text string) {
 		c.message = "loop: " + firstLine(err.Error())
 		return
 	}
-	c.run("armed: "+text, func(ctx context.Context) error {
-		return c.backend.Arm(ctx, c.token, c.dir, machine, source)
-	})
+	prompt := agentPrompt(text, source)
+	c.message = "…"
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err := c.backend.Arm(ctx, c.token, c.dir, machine, source)
+		c.mu.Lock()
+		start := err == nil && c.sendAgent != nil
+		if err != nil {
+			c.message = firstLine(err.Error())
+		} else if start {
+			c.message = "armed — starting the agent"
+		} else {
+			c.message = "armed: " + text
+		}
+		send := c.sendAgent
+		c.mu.Unlock()
+		if start {
+			// The text lands first, then Enter a beat later, so the agent's
+			// composer has ingested the whole line before it submits.
+			send([]byte(prompt))
+			time.Sleep(150 * time.Millisecond)
+			send([]byte("\r"))
+		}
+		c.dirty()
+		c.refresh()
+	}()
+}
+
+// agentPrompt is the opening task typed into the agent when a loop is armed.
+// The hook that claims the loop already tells the agent what must pass, so
+// this only has to point it at the work and set the stopping condition.
+func agentPrompt(text, source string) string {
+	command := strings.TrimSpace(text)
+	if strings.HasPrefix(command, "goal") || strings.HasPrefix(command, "foreach") || strings.HasSuffix(command, ".hmstr") {
+		return "I've armed a Hamster loop. Work it until Hamster reports the loop complete or escalates."
+	}
+	return fmt.Sprintf("Make this pass, and keep working until Hamster reports the loop complete: %s", command)
 }
 
 func (c *console) openTrap() *store.Trap {

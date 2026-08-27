@@ -74,6 +74,13 @@ before doing anything under it. A console holds one armed loop, not a queue.
 This closes the "a person cannot start a loop" gap without a new trust path:
 the run is still created by the hook, under the identity the hook proves.
 
+Arming also hands the agent its opening task: the console types the loop's
+work into the agent and submits it, so a loop started from the dashboard
+begins on its own without the person flipping over to prompt it. The person
+stays on the dashboard and watches — the background model, end to end. The
+same injected prompt is what triggers the claim, so starting the work and
+binding the loop are one act.
+
 ## What the pane shows and does
 
 Top-down, in the order a person needs it: the trap that is waiting (answered

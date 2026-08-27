@@ -125,11 +125,22 @@ func Run(ctx context.Context, options Options) error {
 		fmt.Fprint(os.Stdout, "\x1b[0m\x1b[?25h\x1b[?1049l")
 	}()
 
+	// Writes to the agent come from two places — the person's keystrokes and a
+	// loop's opening prompt — so they are serialised through one path.
+	var agentMu sync.Mutex
+	writeAgent := func(b []byte) error {
+		agentMu.Lock()
+		defer agentMu.Unlock()
+		_, err := ptmx.Write(b)
+		return err
+	}
+
 	var dirty atomic.Bool
 	var bell atomic.Bool
 	dirty.Store(true)
 	console := newConsole(options.Backend, token, options.Dir, options.Hooks, func() { dirty.Store(true) })
 	console.bell = func() { bell.Store(true); dirty.Store(true) }
+	console.sendAgent = func(b []byte) { _ = writeAgent(b) }
 	quip := rand.Intn(len(quips))
 	lastScreen := screenMode(-1)
 
@@ -154,7 +165,7 @@ func Run(ctx context.Context, options Options) error {
 			n, err := os.Stdin.Read(buffer)
 			if n > 0 {
 				if forward := console.route(buffer[:n]); len(forward) > 0 {
-					if _, err := ptmx.Write(forward); err != nil {
+					if err := writeAgent(forward); err != nil {
 						return
 					}
 				}

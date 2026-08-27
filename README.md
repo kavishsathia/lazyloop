@@ -77,7 +77,8 @@ even while you are watching it. On the dashboard:
 
 - `n` arms a loop. Type a command and it becomes "make this pass" under
   default limits; a `.hmstr` path or a literal `goal { … }` compiles as
-  written. The loop starts with the agent's next message.
+  written. Arming it hands Codex its opening task, so the loop starts working
+  on its own — you stay on the dashboard and watch it go.
 - A waiting trap is answered with `a`, `r` (with a note), or an option number.
 - `k` twice kills the run. `q` returns to the agent.
 

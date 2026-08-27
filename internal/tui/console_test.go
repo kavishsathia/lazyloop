@@ -142,11 +142,32 @@ func TestANewTrapRingsTheBell(t *testing.T) {
 func TestTypingACommandArmsTheShorthandGoal(t *testing.T) {
 	backend := &fakeBackend{}
 	c := testConsole(backend)
-	c.route([]byte{prefixKey, 'n'})
+	var typed []byte
+	var typedMu sync.Mutex
+	c.sendAgent = func(b []byte) { typedMu.Lock(); typed = append(typed, b...); typedMu.Unlock() }
+	c.route([]byte{'n'})
 	c.route([]byte("go test ./...\r"))
 	backend.settle(t, c, func() bool { return strings.HasPrefix(c.message, "armed") })
 	if len(backend.armed) != 1 || !strings.Contains(backend.armed[0], `bash.check("go test ./...")`) {
 		t.Fatalf("armed = %q", backend.armed)
+	}
+	// Arming a loop starts the agent on it: the opening task is typed in and
+	// submitted with a carriage return.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		typedMu.Lock()
+		done := strings.Contains(string(typed), "go test ./...") && strings.Contains(string(typed), "\r")
+		typedMu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	typedMu.Lock()
+	sent := string(typed)
+	typedMu.Unlock()
+	if !strings.Contains(sent, "Make this pass") || !strings.Contains(sent, "go test ./...") || !strings.HasSuffix(sent, "\r") {
+		t.Fatalf("agent was not prompted to start: %q", sent)
 	}
 	c.refresh()
 	text := visible(c.render(fullLayout(30, 100), 0))
