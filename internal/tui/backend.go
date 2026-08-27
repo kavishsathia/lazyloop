@@ -17,6 +17,7 @@ type Backend interface {
 	Arm(ctx context.Context, console, workspaceRoot string, machine ir.Machine, source, label string) (*store.Loop, error)
 	Resolve(ctx context.Context, trapID, resolution, note string) error
 	StopLoop(ctx context.Context, id string) error
+	RemoveLoop(ctx context.Context, id string) error
 	ListLoops(ctx context.Context, workspaceRoot string) ([]store.LoopSummary, error)
 	LoadLoop(ctx context.Context, id string) (*store.LoopDetail, error)
 }
@@ -42,6 +43,10 @@ func (b DaemonBackend) Resolve(ctx context.Context, trapID, resolution, note str
 
 func (b DaemonBackend) StopLoop(ctx context.Context, id string) error {
 	return b.Client.Call(ctx, requestID(), "loops.stop", map[string]string{"id": id}, nil)
+}
+
+func (b DaemonBackend) RemoveLoop(ctx context.Context, id string) error {
+	return b.Client.Call(ctx, requestID(), "loops.remove", map[string]string{"id": id}, nil)
 }
 
 func (b DaemonBackend) ListLoops(ctx context.Context, workspaceRoot string) ([]store.LoopSummary, error) {

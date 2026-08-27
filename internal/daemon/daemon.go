@@ -409,6 +409,14 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 			err = s.store.StopLoop(ctx, params.ID)
 			result = map[string]any{"ok": err == nil}
 		}
+	case "loops.remove":
+		var params struct {
+			ID string `json:"id"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			err = s.store.RemoveLoop(ctx, params.ID)
+			result = map[string]any{"ok": err == nil}
+		}
 	case "hook.event":
 		var params hook.HookRequest
 		if err = json.Unmarshal(request.Params, &params); err == nil {

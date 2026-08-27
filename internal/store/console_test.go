@@ -329,3 +329,41 @@ func TestListLoopsCarriesTheRootAgent(t *testing.T) {
 		t.Fatalf("root agent = %+v", agent)
 	}
 }
+
+func TestRemoveLoopDeletesItAndKillsItsRun(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "hamster.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	ctx := context.Background()
+	if _, err := state.ArmLoop(ctx, "console-1", "/repo", consoleMachine(), "src", "go test"); err != nil {
+		t.Fatal(err)
+	}
+	run, err := state.ClaimLoop(ctx, "console-1", "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loops, _ := state.ListLoops(ctx, "/repo", 0)
+	if len(loops) != 1 {
+		t.Fatalf("expected one loop, got %d", len(loops))
+	}
+	if err := state.RemoveLoop(ctx, loops[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := state.ListLoops(ctx, "/repo", 0)
+	if len(after) != 0 {
+		t.Fatalf("loop not removed from the list: %+v", after)
+	}
+	// The run it was on is killed and its process unbound.
+	killed, err := state.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if killed.Status != "killed" {
+		t.Fatalf("run status = %s, want killed", killed.Status)
+	}
+	if _, err := state.FindCurrentRun(ctx, "session", ""); err == nil {
+		t.Fatal("session still bound to the removed loop's run")
+	}
+}

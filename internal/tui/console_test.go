@@ -21,6 +21,7 @@ type fakeBackend struct {
 	armed    []string
 	resolved []string
 	stopped  []string
+	removed  []string
 	fail     error
 }
 
@@ -57,6 +58,23 @@ func (f *fakeBackend) StopLoop(_ context.Context, id string) error {
 		return f.fail
 	}
 	f.stopped = append(f.stopped, id)
+	return nil
+}
+
+func (f *fakeBackend) RemoveLoop(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail != nil {
+		return f.fail
+	}
+	f.removed = append(f.removed, id)
+	kept := f.loops[:0]
+	for _, l := range f.loops {
+		if l.ID != id {
+			kept = append(kept, l)
+		}
+	}
+	f.loops = kept
 	return nil
 }
 
@@ -382,5 +400,32 @@ func TestParseMouseDecodesSGR(t *testing.T) {
 	}
 	if _, _, _, _, _, ok := parseMouse([]byte("\x1b[A"), 0); ok {
 		t.Fatal("an arrow key was parsed as a mouse event")
+	}
+}
+
+func TestRemoveNeedsConfirmation(t *testing.T) {
+	backend := &fakeBackend{loops: []store.LoopSummary{{ID: "l1", Label: "go test", Status: "complete"}}}
+	c := testConsole(backend)
+	killed := ""
+	c.killAgent = func(id string) { killed = id }
+	c.refresh()
+	c.route([]byte{'x'})
+	if c.pendingRemove != "l1" || !strings.Contains(c.message, "remove") {
+		t.Fatalf("x did not ask to confirm: pending=%q message=%q", c.pendingRemove, c.message)
+	}
+	if len(backend.removed) != 0 {
+		t.Fatal("removed before confirmation")
+	}
+	// A non-Enter key cancels.
+	c.route([]byte{'j'})
+	if c.pendingRemove != "" || len(backend.removed) != 0 {
+		t.Fatalf("a key did not cancel the removal: pending=%q removed=%v", c.pendingRemove, backend.removed)
+	}
+	// x then Enter removes, and the agent is killed.
+	c.route([]byte{'x'})
+	c.route([]byte{'\r'})
+	settle(t, c, func() bool { return c.message == "removed" })
+	if len(backend.removed) != 1 || backend.removed[0] != "l1" || killed != "l1" {
+		t.Fatalf("removed=%v killed=%q", backend.removed, killed)
 	}
 }

@@ -172,6 +172,31 @@ func (s *Store) ClaimLoop(ctx context.Context, console, codexSessionID string) (
 	return run, nil
 }
 
+// RemoveLoop deletes a loop from the list. A running loop is stopped first —
+// its run marked killed and its process unbound — then the loop row is gone.
+// The run stays in the runs table as history; only the loop pointer to it is
+// removed.
+func (s *Store) RemoveLoop(ctx context.Context, loopID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := formatTime(time.Now().UTC())
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET status='killed', termination_reason='removed from lazyloop', updated_at=?
+WHERE id=(SELECT run_id FROM loops WHERE id=?) AND status IN ('running','waiting','trapped')`, now, loopID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE processes SET current_run_id=NULL, updated_at=?
+WHERE current_run_id=(SELECT run_id FROM loops WHERE id=?)`, now, loopID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM loops WHERE id=?`, loopID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // LoopSummary is one row in the list of loops. Status is "armed" for a loop
 // nobody has claimed, otherwise the status of the run executing it.
 type LoopSummary struct {

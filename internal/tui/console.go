@@ -62,11 +62,12 @@ type console struct {
 	hooks   Hooks
 	now     func() time.Time
 
-	screen  screenMode
-	mode    mode
-	line    []rune
-	message string
-	armKill bool
+	screen        screenMode
+	mode          mode
+	line          []rune
+	message       string
+	armKill       bool
+	pendingRemove string // a loop id awaiting Enter to confirm removal
 
 	draft  []clause
 	recipe byte // the recipe awaiting its argument, or 0 in the menu
@@ -255,6 +256,11 @@ func (c *console) mouse(col, row, button int, press bool) {
 }
 
 func (c *console) escape() {
+	if c.pendingRemove != "" {
+		c.pendingRemove, c.message = "", "removal cancelled"
+		c.dirty()
+		return
+	}
 	switch {
 	case c.mode == modeBuild && c.recipe != 0:
 		c.recipe, c.line = 0, nil // cancel the field, stay in the builder
@@ -276,6 +282,19 @@ func (c *console) key(r rune) {
 	}
 	if c.mode != modeKeys {
 		c.edit(r)
+		return
+	}
+	if c.pendingRemove != "" {
+		if r == '\r' || r == '\n' {
+			id := c.pendingRemove
+			c.pendingRemove = ""
+			if c.killAgent != nil {
+				c.killAgent(id)
+			}
+			c.run("removed", func(ctx context.Context) error { return c.backend.RemoveLoop(ctx, id) })
+		} else {
+			c.pendingRemove, c.message = "", "removal cancelled"
+		}
 		return
 	}
 	if r != 'd' {
@@ -306,6 +325,14 @@ func (c *console) key(r rune) {
 		}
 	case 'd':
 		c.stopSelected()
+	case 'x':
+		summary, ok := c.selectedSummary()
+		if !ok {
+			c.message = "no loop to remove"
+			return
+		}
+		c.pendingRemove = summary.ID
+		c.message = fmt.Sprintf("remove %q?  ⏎ confirm · esc cancel", summary.Label)
 	case 's':
 		if c.hooks.Installed || c.hooks.Install == nil {
 			return

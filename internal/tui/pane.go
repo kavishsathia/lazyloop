@@ -209,6 +209,9 @@ func (c *console) barRow(width int) string {
 	case modeNote:
 		return editorBar(width, "why reject?", c.line)
 	}
+	if c.pendingRemove != "" {
+		return fit("  "+firstLine(c.message), width, styleBad)
+	}
 	if trap := c.openTrap(); trap != nil {
 		answer := "a approve · r reject"
 		if trap.Kind == store.TrapSelection {
@@ -222,7 +225,7 @@ func (c *console) barRow(width int) string {
 	if c.message != "" {
 		return fit("  "+firstLine(c.message), width, styleItalic)
 	}
-	hints := "n new · d stop · ↑↓ move · tab panel · ctrl-] codex · q quit"
+	hints := "n new · d stop · x remove · ↑↓ move · tab panel · ctrl-] open · q quit"
 	return fit("  "+hints, width, styleDim)
 }
 

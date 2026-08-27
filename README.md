@@ -98,7 +98,9 @@ output, the traps. Both right panels scroll.
   Codex and hands it the task. It won't start without at least one check.
 - A waiting trap is answered with `a`, `r` (with a note), or an option
   number; the bottom bar shows the question.
-- `d` twice stops the selected loop — killing its Codex and its run.
+- `d` twice stops the selected loop — killing its Codex and its run, but
+  keeping it in the list. `x` removes a loop from the list entirely (stopping
+  it first if it is running); press `⏎` to confirm, `esc` to cancel.
 - `Ctrl-C` or `q` quits lazyloop, stopping Codex with it.
 
 `HAMSTER_AGENT` swaps Codex for another command, for example

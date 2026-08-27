@@ -33,8 +33,8 @@ func TestPaneLinesAreExactlyPaneWide(t *testing.T) {
 			}
 		}
 	}
-	if text := visible(c.render(lay, 0)); !strings.Contains(text, "some-project") || !strings.Contains(text, "codex") {
-		t.Fatalf("idle pane lacks the directory or the flip hint:\n%s", text)
+	if text := visible(c.render(lay, 0)); !strings.Contains(text, "some-project") || !strings.Contains(text, "remove") {
+		t.Fatalf("idle pane lacks the directory or the hint bar:\n%s", text)
 	}
 }
 
