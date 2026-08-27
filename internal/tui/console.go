@@ -78,6 +78,9 @@ type console struct {
 	// its opening task, so a loop started from the dashboard begins on its own
 	// without the person flipping over to prompt it. Optional.
 	sendAgent func([]byte)
+	// quit ends the whole session. Ctrl-C or q from the dashboard calls it.
+	// Optional.
+	quit func()
 
 	// The three panels and what is selected within them.
 	panel           panelFocus
@@ -112,6 +115,10 @@ func (c *console) route(input []byte) []byte {
 				continue
 			}
 			forward = append(forward, b)
+			continue
+		}
+		if b == 0x03 { // ctrl-c quits lazyloop from the dashboard
+			c.requestQuit()
 			continue
 		}
 		if b == 0x1b {
@@ -182,6 +189,8 @@ func (c *console) key(r rune) {
 	switch r {
 	case prefixKey:
 		c.screen = screenAgent
+	case 'q':
+		c.requestQuit()
 	case '\t':
 		c.cyclePanel(1)
 	case 'j':
@@ -304,6 +313,13 @@ func agentPrompt(text, source string) string {
 		return "I've armed a Hamster loop. Work it until Hamster reports the loop complete or escalates."
 	}
 	return fmt.Sprintf("Make this pass, and keep working until Hamster reports the loop complete: %s", command)
+}
+
+// requestQuit ends the whole session.
+func (c *console) requestQuit() {
+	if c.quit != nil {
+		c.quit()
+	}
 }
 
 // cyclePanel moves keyboard focus between the three panels.

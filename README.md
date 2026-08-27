@@ -92,6 +92,7 @@ output, the traps. Both right panels scroll.
 - A waiting trap is answered with `a`, `r` (with a note), or an option
   number; the bottom bar shows the question.
 - `d` twice stops the running loop; `x` disarms an armed one.
+- `Ctrl-C` or `q` quits lazyloop, stopping Codex with it.
 
 `HAMSTER_AGENT` swaps Codex for another command, for example
 `HAMSTER_AGENT=claude`. A bare `hamster` opens the same screen.

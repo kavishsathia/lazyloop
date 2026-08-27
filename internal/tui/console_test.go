@@ -307,3 +307,32 @@ func TestHooksMissingIsTheFirstThingShown(t *testing.T) {
 		t.Fatalf("s did not install: %v %v %q", installed, c.hooks.Installed, c.message)
 	}
 }
+
+func TestCtrlCAndQQuitFromTheDashboard(t *testing.T) {
+	for _, key := range [][]byte{{0x03}, {'q'}} {
+		quit := 0
+		c := testConsole(&fakeBackend{})
+		c.quit = func() { quit++ }
+		c.route(key)
+		if quit != 1 {
+			t.Fatalf("key %v did not quit: %d", key, quit)
+		}
+	}
+	// Ctrl-C while typing a loop still quits.
+	quit := 0
+	c := testConsole(&fakeBackend{})
+	c.quit = func() { quit++ }
+	c.route([]byte{'n'})
+	c.route([]byte{0x03})
+	if quit != 1 {
+		t.Fatalf("ctrl-c in the editor did not quit: %d", quit)
+	}
+	// On the agent screen, ctrl-c goes to the agent, not lazyloop.
+	quit = 0
+	c = testConsole(&fakeBackend{})
+	c.quit = func() { quit++ }
+	c.screen = screenAgent
+	if got := c.route([]byte{0x03}); len(got) != 1 || got[0] != 0x03 || quit != 0 {
+		t.Fatalf("ctrl-c on the agent screen quit lazyloop or was not forwarded: forwarded=%v quit=%d", got, quit)
+	}
+}

@@ -141,6 +141,9 @@ func Run(ctx context.Context, options Options) error {
 	console := newConsole(options.Backend, token, options.Dir, options.Hooks, func() { dirty.Store(true) })
 	console.bell = func() { bell.Store(true); dirty.Store(true) }
 	console.sendAgent = func(b []byte) { _ = writeAgent(b) }
+	quit := make(chan struct{})
+	var quitOnce sync.Once
+	console.quit = func() { quitOnce.Do(func() { close(quit) }) }
 	quip := rand.Intn(len(quips))
 	lastScreen := screenMode(-1)
 
@@ -206,6 +209,10 @@ func Run(ctx context.Context, options Options) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-quit:
+			// Ctrl-C or q on the dashboard: the deferred cancel kills the
+			// agent, and the deferred restore hands the terminal back.
+			return nil
 		case <-exited:
 			_ = command.Wait()
 			return nil

@@ -180,7 +180,7 @@ func (c *console) barRow(width int) string {
 	if c.message != "" {
 		return fit("  "+firstLine(c.message), width, styleItalic)
 	}
-	hints := "n new · d stop · x disarm · ↑↓ move · tab panel · ctrl-] codex"
+	hints := "n new · d stop · ↑↓ move · tab panel · ctrl-] codex · q quit"
 	return fit("  "+hints, width, styleDim)
 }
 
