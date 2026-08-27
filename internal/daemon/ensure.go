@@ -6,6 +6,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -43,7 +45,7 @@ func Ensure(ctx context.Context, paths Paths, executable, home string) error {
 		if !shouldReplace(CurrentIdentity(), running) {
 			return nil
 		}
-		if err := retire(ctx, paths.Socket, running); err != nil {
+		if err := retire(ctx, paths, home, running); err != nil {
 			return err
 		}
 	}
@@ -61,12 +63,19 @@ func Ensure(ctx context.Context, paths Paths, executable, home string) error {
 	return waitForSocket(ctx, paths.Socket, true)
 }
 
-// shouldReplace is true when the caller's build is newer than the daemon's by
-// more than filesystem timestamp jitter. A daemon that does not report an
-// identity is too old to be asked to leave, and is left alone.
+// shouldReplace is true when the caller is running newer code than the
+// daemon. A daemon that reports no identity predates identities themselves,
+// so any caller that can ask the question is newer than it — this is the
+// one-time upgrade from a pre-identity daemon, and it must be retired or the
+// old code keeps answering hooks forever. Among identified daemons, the
+// caller wins only when its build is newer by more than timestamp jitter, so
+// two binaries built together never take turns.
 func shouldReplace(caller, running Identity) bool {
-	if running.PID == 0 || running.Modified.IsZero() || caller.Modified.IsZero() {
+	if caller.Modified.IsZero() {
 		return false
+	}
+	if running.Modified.IsZero() {
+		return true
 	}
 	return caller.Modified.After(running.Modified.Add(time.Second))
 }
@@ -91,18 +100,56 @@ func ping(ctx context.Context, socket string) (Identity, bool) {
 }
 
 // retire asks an older daemon to stop and waits for its socket to go away.
-// Its state is in SQLite; only in-memory observations are lost.
-func retire(ctx context.Context, socket string, running Identity) error {
-	process, err := os.FindProcess(running.PID)
-	if err != nil {
-		return err
+// A daemon that reported its PID is signalled directly; a pre-identity daemon
+// gave none, so it is found by its serve process for this home. Its state is
+// in SQLite; only in-memory observations are lost.
+func retire(ctx context.Context, paths Paths, home string, running Identity) error {
+	pid := running.PID
+	if pid == 0 {
+		pid = findServeProcess(home)
 	}
-	if err := process.Signal(syscall.SIGTERM); err != nil {
+	if pid == 0 {
+		return fmt.Errorf("an older Hamster daemon is answering but could not be located; stop it and try again")
+	}
+	if process, err := os.FindProcess(pid); err == nil {
 		// Already gone, or not ours to signal; either way the socket check
-		// below decides.
-		_ = err
+		// below is what decides.
+		_ = process.Signal(syscall.SIGTERM)
 	}
-	return waitForSocket(ctx, socket, false)
+	return waitForSocket(ctx, paths.Socket, false)
+}
+
+// findServeProcess locates a `daemon serve --home <home>` process, which is
+// how a pre-identity daemon is retired: it answers ping but names no PID.
+func findServeProcess(home string) int {
+	self := os.Getpid()
+	output, err := exec.Command("pgrep", "-f", "daemon serve").Output()
+	if err != nil {
+		return 0
+	}
+	for _, field := range strings.Fields(string(output)) {
+		pid, err := strconv.Atoi(field)
+		if err != nil || pid == self {
+			continue
+		}
+		if commandLineMatchesHome(pid, home) {
+			return pid
+		}
+	}
+	return 0
+}
+
+func commandLineMatchesHome(pid int, home string) bool {
+	output, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return false
+	}
+	line := string(output)
+	if !strings.Contains(line, "daemon serve") {
+		return false
+	}
+	// A default-home daemon carries no --home flag; match it too.
+	return strings.Contains(line, "--home "+home) || !strings.Contains(line, "--home ")
 }
 
 func waitForSocket(ctx context.Context, socket string, want bool) error {

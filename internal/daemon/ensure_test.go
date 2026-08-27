@@ -26,9 +26,15 @@ func TestOnlyAStrictlyNewerCallerReplacesTheDaemon(t *testing.T) {
 	if !shouldReplace(Identity{Modified: now.Add(time.Minute)}, running) {
 		t.Fatal("a newer build did not replace the daemon")
 	}
-	// A daemon from before identities were reported cannot be asked to leave.
-	if shouldReplace(Identity{Modified: now.Add(time.Hour)}, Identity{}) {
-		t.Fatal("an unidentified daemon was marked for replacement")
+	// A daemon from before identities were reported must be retired: any
+	// caller that can ask the question is newer than it, and its old code
+	// would otherwise answer hooks forever.
+	if !shouldReplace(Identity{Modified: now}, Identity{}) {
+		t.Fatal("a pre-identity daemon was left running")
+	}
+	// A caller that cannot describe itself replaces nothing.
+	if shouldReplace(Identity{}, running) {
+		t.Fatal("an unidentified caller replaced a daemon")
 	}
 }
 
