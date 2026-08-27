@@ -70,23 +70,30 @@ lazyloop
 ```
 
 lazyloop is two full screens with a key between them. You land on the
-dashboard; `Tab` flips to Codex — the stock CLI on a pseudo-terminal, its
+dashboard; `ctrl-]` flips to Codex — the stock CLI on a pseudo-terminal, its
 own rendering, its own hooks — and `ctrl-]` flips back. Codex runs the whole
 time, drawn only while it is the screen you are on, so a trap rings the bell
-even while you are watching it. On the dashboard:
+even while you are watching it.
 
+The dashboard is three panels, lazygit style. On the left, the list of loops
+— every loop you have ever run in this directory, persisted across sessions,
+each with a coloured dot for its status (blue running, green complete, red
+failed, amber waiting on you). Top-right, the selected loop's goal or script.
+Bottom-right, its log: the tool calls, the verifier results with their
+output, the traps. Both right panels scroll.
+
+- `↑ ↓` move within the focused panel — selecting a loop, or scrolling its
+  source or log. `Tab` moves focus between the three panels.
 - `n` arms a loop. Type a command and it becomes "make this pass" under
   default limits; a `.hmstr` path or a literal `goal { … }` compiles as
   written. Arming it hands Codex its opening task, so the loop starts working
   on its own — you stay on the dashboard and watch it go.
-- A waiting trap is answered with `a`, `r` (with a note), or an option number.
-- `k` twice kills the run. `q` returns to the agent.
+- A waiting trap is answered with `a`, `r` (with a note), or an option
+  number; the bottom bar shows the question.
+- `d` twice stops the running loop; `x` disarms an armed one.
 
-While a loop runs the dashboard shows its state, iteration, limits counting
-down, and the last verifier result — green when it passes, red when it
-fails, amber while a trap waits on you. `HAMSTER_AGENT` swaps Codex for
-another command, for example `HAMSTER_AGENT=claude`. A bare `hamster` opens
-the same screen.
+`HAMSTER_AGENT` swaps Codex for another command, for example
+`HAMSTER_AGENT=claude`. A bare `hamster` opens the same screen.
 
 ## Traps
 

@@ -21,6 +21,8 @@ type fakeBackend struct {
 	killed   []string
 	disarmed int
 	fail     error
+	loops    []store.LoopSummary
+	details  map[string]*store.LoopDetail
 }
 
 func (f *fakeBackend) Observe(context.Context, string) (*store.ConsoleObservation, error) {
@@ -38,6 +40,12 @@ func (f *fakeBackend) Arm(_ context.Context, _, _ string, machine ir.Machine, so
 	}
 	f.armed = append(f.armed, source)
 	f.view.Armed = &store.Loop{Machine: machine, Source: source, Label: label}
+	id := "loop-" + label
+	f.loops = append([]store.LoopSummary{{ID: id, Label: label, Status: "armed"}}, f.loops...)
+	if f.details == nil {
+		f.details = map[string]*store.LoopDetail{}
+	}
+	f.details[id] = &store.LoopDetail{Loop: store.Loop{ID: id, Label: label, Source: source}, Status: "armed"}
 	return nil
 }
 
@@ -65,6 +73,21 @@ func (f *fakeBackend) Kill(_ context.Context, session, _ string) error {
 	return nil
 }
 
+func (f *fakeBackend) ListLoops(context.Context, string) ([]store.LoopSummary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]store.LoopSummary(nil), f.loops...), nil
+}
+
+func (f *fakeBackend) LoadLoop(_ context.Context, id string) (*store.LoopDetail, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if d, ok := f.details[id]; ok {
+		return d, nil
+	}
+	return &store.LoopDetail{Loop: store.Loop{ID: id}}, nil
+}
+
 func (f *fakeBackend) settle(t *testing.T, c *console, want func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -84,7 +107,7 @@ func testConsole(backend Backend) *console {
 	return newConsole(backend, "console", "/repo", Hooks{Installed: true}, func() {})
 }
 
-func TestFlippingBetweenTheDashboardAndTheAgent(t *testing.T) {
+func TestFlippingAndPanelCycling(t *testing.T) {
 	c := testConsole(&fakeBackend{})
 	// The dashboard is home: keys act on it and nothing is forwarded.
 	if got := string(c.route([]byte{'n'})); got != "" {
@@ -93,30 +116,35 @@ func TestFlippingBetweenTheDashboardAndTheAgent(t *testing.T) {
 	if c.screen != screenDashboard || c.mode != modeLoop {
 		t.Fatalf("after n: screen %v mode %v", c.screen, c.mode)
 	}
-	// An arrow key inside the editor is swallowed, not typed.
-	c.route([]byte("\x1b[A"))
 	c.route([]byte("go test ./..."))
 	if string(c.line) != "go test ./..." {
 		t.Fatalf("line = %q", string(c.line))
 	}
-	c.route([]byte{0x1b}) // lone escape cancels the editor
+	c.route([]byte{0x1b}) // escape cancels the editor
 	if c.mode != modeKeys || c.line != nil {
 		t.Fatalf("escape did not cancel: mode %v line %q", c.mode, string(c.line))
 	}
-	// Tab flips to the agent, where keys pass straight through.
-	c.route([]byte{'\t'})
+	c.route([]byte{0x1b}) // escape again flips to the agent
 	if c.screen != screenAgent {
-		t.Fatal("tab did not flip to the agent")
+		t.Fatal("escape did not flip to the agent")
 	}
 	if got := string(c.route([]byte("hello"))); got != "hello" {
 		t.Fatalf("agent screen forwarded %q", got)
 	}
-	// The prefix always brings lazyloop back.
+	// ctrl-] always brings lazyloop back; on the dashboard it flips to codex.
 	if got := string(c.route([]byte{prefixKey})); got != "" {
 		t.Fatalf("prefix forwarded %q", got)
 	}
 	if c.screen != screenDashboard {
 		t.Fatal("prefix did not return to the dashboard")
+	}
+	// Tab cycles the active panel through the three.
+	start := c.panel
+	c.route([]byte{'\t'})
+	c.route([]byte{'\t'})
+	c.route([]byte{'\t'})
+	if c.panel != start {
+		t.Fatalf("three tabs did not return to the first panel: %v", c.panel)
 	}
 }
 
@@ -184,7 +212,7 @@ func TestTypingACommandArmsTheShorthandGoal(t *testing.T) {
 func TestBadLoopIsReportedNotArmed(t *testing.T) {
 	backend := &fakeBackend{}
 	c := testConsole(backend)
-	c.route([]byte{prefixKey, 'n'})
+	c.route([]byte{'n'})
 	c.route([]byte("goal { verify x = nope; }\r"))
 	if !strings.HasPrefix(c.message, "loop:") || len(backend.armed) != 0 {
 		t.Fatalf("message %q, armed %v", c.message, backend.armed)
@@ -198,10 +226,10 @@ func TestTrapsAreAnsweredByKey(t *testing.T) {
 	c := testConsole(backend)
 	c.refresh()
 	text := visible(c.render(fullLayout(30, 100), 0))
-	if !strings.Contains(text, "waiting on you") || !strings.Contains(text, "Do the names match?") {
-		t.Fatalf("pane does not show the trap:\n%s", text)
+	if !strings.Contains(text, "Do the names match?") {
+		t.Fatalf("pane does not surface the trap:\n%s", text)
 	}
-	c.route([]byte{prefixKey, '1'})
+	c.route([]byte{'1'})
 	if !strings.Contains(c.message, "wants a or r") {
 		t.Fatalf("number on an approval trap gave %q", c.message)
 	}
@@ -227,18 +255,18 @@ func TestTrapsAreAnsweredByKey(t *testing.T) {
 	}
 }
 
-func TestKillNeedsTwoPresses(t *testing.T) {
+func TestStopNeedsTwoPresses(t *testing.T) {
 	backend := &fakeBackend{view: store.ConsoleObservation{Bound: true, CodexSessionID: "session",
 		Run: &store.RunObservation{ID: "run_1", Status: "running", MachineKind: "goal"}}}
 	c := testConsole(backend)
 	c.refresh()
-	c.route([]byte{prefixKey, 'k', 'n'})
+	c.route([]byte{'d', 'n'})
 	c.escape()
 	if len(backend.killed) != 0 {
-		t.Fatal("k then another key killed the run")
+		t.Fatal("d then another key stopped the run")
 	}
-	c.route([]byte("kk"))
-	backend.settle(t, c, func() bool { return c.message == "killed" })
+	c.route([]byte("dd"))
+	backend.settle(t, c, func() bool { return c.message == "stopped" })
 	if len(backend.killed) != 1 || backend.killed[0] != "session" {
 		t.Fatalf("killed = %q", backend.killed)
 	}
@@ -247,7 +275,7 @@ func TestKillNeedsTwoPresses(t *testing.T) {
 func TestBackendErrorsSurfaceInThePane(t *testing.T) {
 	backend := &fakeBackend{fail: errors.New("request_failed: daemon says no")}
 	c := testConsole(backend)
-	c.route([]byte{prefixKey, 'n'})
+	c.route([]byte{'n'})
 	c.route([]byte("go test\r"))
 	backend.settle(t, c, func() bool { return strings.Contains(c.message, "daemon says no") })
 }
@@ -271,10 +299,10 @@ func TestHooksMissingIsTheFirstThingShown(t *testing.T) {
 	installed := false
 	c := newConsole(&fakeBackend{}, "console", "/repo", Hooks{Installed: false, Install: func() error { installed = true; return nil }}, func() {})
 	text := visible(c.render(fullLayout(30, 100), 0))
-	if !strings.Contains(text, "install the global hook") {
-		t.Fatalf("pane does not offer setup:\n%s", text)
+	if !strings.Contains(text, "hooks not installed") {
+		t.Fatalf("pane does not warn about hooks:\n%s", text)
 	}
-	c.route([]byte{prefixKey, 's'})
+	c.route([]byte{'s'})
 	if !installed || !c.hooks.Installed || !strings.Contains(c.message, "installed") {
 		t.Fatalf("s did not install: %v %v %q", installed, c.hooks.Installed, c.message)
 	}

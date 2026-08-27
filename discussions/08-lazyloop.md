@@ -81,18 +81,29 @@ stays on the dashboard and watches — the background model, end to end. The
 same injected prompt is what triggers the claim, so starting the work and
 binding the loop are one act.
 
-## What the pane shows and does
+## Three panels
 
-Top-down, in the order a person needs it: the trap that is waiting (answered
-with `a`, `r`, or an option number; a rejection takes a note, because the
-agent re-derives the work from it); the loop — machine, state, iteration,
-limits counting down, the last verifier result, tool-call and denial counts;
-the armed launch, if any; the last action's outcome. `n` arms a loop. `k`
-twice kills the run. `q` or escape returns to the agent.
+The dashboard is three lazygit-style panels. On the left, the list of loops:
+every loop armed in this directory, persisted so a later session sees the
+loops from before — armed, running, complete, failed — each with a coloured
+status dot and a marker when a trap waits. Top-right, the selected loop's
+source: the goal it compiled to, or the script behind it. Bottom-right, its
+log, built from the run's events — tool calls, verifier results with the
+command's own output, traps. Both right panels scroll; the log pins to the
+latest line until you scroll up.
 
-Every action is a daemon call. The pane never touches run state and redraws
-from what `console.observe` reports, twice a second and immediately after
-any action.
+`↑`/`↓` act on the focused panel — selecting a loop, or scrolling text —
+and `Tab` moves focus between the three. `n` arms a loop, `d` twice stops
+the running one, `x` disarms an armed one. A waiting trap is answered with
+`a`, `r` (with a note, because the agent re-derives the work from it), or an
+option number; the bottom bar carries the question so it is seen without
+scrolling the log.
+
+The list and the running loop come from the daemon: `loops.list` for the
+list with live status, `loops.get` for a loop's source and log,
+`console.observe` for the trap awaiting an answer. The panels never touch
+run state; they redraw from what the daemon reports, twice a second and
+immediately after any action.
 
 ## Hooks, once
 

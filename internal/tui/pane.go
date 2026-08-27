@@ -9,10 +9,10 @@ import (
 	"hamster/internal/store"
 )
 
-// The pane borrows lazygit's look: each concern is a rounded panel with its
-// name in the top border, and colour carries meaning — green for what passed,
-// red for what failed, amber for what is waiting on a person, blue for the
-// keys they can press.
+// The dashboard is three lazygit-style panels: the list of loops on the left,
+// the selected loop's source top-right, its log bottom-right, and a key bar
+// along the bottom. Colour carries meaning — green passed, red failed, amber
+// waiting on a person, blue the active panel and the keys.
 const (
 	reset = "\x1b[0m"
 
@@ -21,18 +21,13 @@ const (
 	styleItalic = "\x1b[3m"
 	styleFocus  = "\x1b[7m"
 
-	styleArt  = "\x1b[38;5;214m" // amber hamster
-	styleGood = "\x1b[38;5;42m"  // green
-	styleBad  = "\x1b[38;5;203m" // red
-	styleWarn = "\x1b[38;5;214m" // amber
-	styleKey  = "\x1b[38;5;39m"  // blue
+	styleGood = "\x1b[38;5;42m"
+	styleBad  = "\x1b[38;5;203m"
+	styleWarn = "\x1b[38;5;214m"
+	styleKey  = "\x1b[38;5;39m"
 
-	borderIdle  = "\x1b[38;5;240m" // a panel at rest
-	borderRun   = "\x1b[38;5;39m"  // a loop in progress
-	borderGood  = "\x1b[38;5;42m"
-	borderWarn  = "\x1b[38;5;214m"
-	borderBad   = "\x1b[38;5;203m"
-	borderAlert = "\x1b[38;5;203m" // a question waiting on the person
+	borderIdle = "\x1b[38;5;240m"
+	borderRun  = "\x1b[38;5;39m"
 )
 
 type line struct {
@@ -40,258 +35,264 @@ type line struct {
 	style string
 }
 
-// render lays out the left pane. Every returned string is exactly lay.left
-// cells wide. It reads top-down in the order a person needs it: the masthead,
-// what is waiting on them, the loop, what is armed, then how to act.
+// render lays out the whole dashboard at the full terminal size. Every row it
+// returns is exactly lay.left cells wide.
 func (c *console) render(lay layout, quip int) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	width := lay.left
-	if width < 4 {
-		return nil
-	}
-	view := c.view
-
-	var body []string
-	body = append(body, c.masthead(width)...)
-
-	if !c.hooks.Installed {
-		body = append(body, panel(width, "hooks", borderWarn, []line{
-			{"the agent's hooks don't reach Hamster yet — nothing on the right is governed", styleWarn},
-			{"s  install the global hook", styleKey},
-		})...)
+	width, height := lay.left, lay.rows
+	if width < 8 || height < 4 {
+		rows := make([]string, height)
+		for i := range rows {
+			rows[i] = fit("lazyloop", width, styleBold)
+		}
+		return rows
 	}
 
-	if view != nil && len(view.Traps) > 0 {
-		body = append(body, c.trapPanel(width, view.Traps)...)
+	panelsH := height - 1
+	leftW := width / 3
+	if leftW < 24 {
+		leftW = 24
 	}
-
-	body = append(body, c.loopPanel(width, view)...)
-
-	if view != nil && view.Armed != nil {
-		body = append(body, panel(width, "armed", borderRun, []line{
-			{loopLabel(*view.Armed), styleBold},
-			{"starts with the agent's next message", styleDim},
-			{"x  disarm", styleKey},
-		})...)
+	if leftW > width-40 {
+		leftW = width - 40
 	}
-
-	if c.message != "" {
-		body = append(body, blankRow(width), styledRow("  "+firstLine(c.message), width, styleItalic))
+	if leftW < 8 || leftW > width-8 {
+		leftW = width / 2
 	}
-
-	footer := c.footer(width, quip)
-	return frame(width, lay.rows, body, footer)
-}
-
-func (c *console) masthead(width int) []string {
-	rows := []string{blankRow(width)}
-	for _, art := range art {
-		rows = append(rows, styledRow(center(art, width), width, styleArt))
+	rightW := width - leftW
+	topH := panelsH / 2
+	if topH < 3 {
+		topH = 3
 	}
-	rows = append(rows, blankRow(width))
-	rows = append(rows, styledRow(center("lazyloop", width), width, styleKey+styleBold))
-	rows = append(rows, styledRow(center(filepath.Base(c.dir), width), width, styleDim))
-	rows = append(rows, blankRow(width))
+	if topH > panelsH-3 {
+		topH = panelsH - 3
+	}
+	botH := panelsH - topH
+
+	left := c.renderList(leftW, panelsH)
+	right := append(c.renderSource(rightW, topH), c.renderLogs(rightW, botH)...)
+
+	rows := make([]string, 0, height)
+	for i := 0; i < panelsH; i++ {
+		l := blankRow(leftW)
+		if i < len(left) {
+			l = left[i]
+		}
+		r := blankRow(rightW)
+		if i < len(right) {
+			r = right[i]
+		}
+		rows = append(rows, l+r)
+	}
+	rows = append(rows, c.barRow(width))
 	return rows
 }
 
-func (c *console) trapPanel(width int, traps []store.Trap) []string {
-	trap := traps[0]
-	body := []line{{trap.Prompt, styleItalic}}
-	if trap.Kind == store.TrapSelection {
-		for index, option := range trap.Options {
-			if index >= 9 {
-				break
-			}
-			body = append(body, line{fmt.Sprintf("%d  %s", index+1, option), styleKey})
+func (c *console) renderList(width, height int) []string {
+	title := fmt.Sprintf("%s · %d loops", filepath.Base(c.dir), len(c.loops))
+	border := borderFor(c.panel == focusList)
+	if len(c.loops) == 0 {
+		return scrollPanel(width, height, title, border, []line{
+			{"no loops yet", styleDim},
+			{"press n to start one", styleKey},
+		}, 0)
+	}
+	body := make([]line, 0, len(c.loops))
+	for _, loop := range c.loops {
+		marker, style := loopMarker(loop.Status)
+		label := loop.Label
+		if label == "" {
+			label = "(loop)"
 		}
-	} else {
-		body = append(body, line{"a  approve", styleGood}, line{"r  reject", styleBad})
+		text := marker + " " + label
+		if loop.Traps > 0 {
+			text += "  !"
+			style = styleWarn
+		}
+		if loop.ID == c.selectedID {
+			style = styleFocus
+		}
+		body = append(body, line{text, style})
 	}
-	if len(traps) > 1 {
-		body = append(body, line{fmt.Sprintf("and %d more after this", len(traps)-1), styleDim})
-	}
-	return panel(width, "waiting on you", borderAlert, body)
+	offset := windowOffset(c.selectedIndex(), len(body), height-2)
+	return scrollPanel(width, height, title, border, body, offset)
 }
 
-func (c *console) loopPanel(width int, view *store.ConsoleObservation) []string {
-	switch {
-	case c.viewErr != nil:
-		return panel(width, "loop", borderBad, []line{{"daemon: " + firstLine(c.viewErr.Error()), styleBad}})
-	case view == nil || !view.Bound:
-		return panel(width, "loop", borderIdle, []line{{"waiting for the agent's first hook", styleDim}})
-	case view.Run == nil:
-		return panel(width, "loop", borderIdle, []line{{"no loop is governing this agent", styleDim}})
+func (c *console) renderSource(width, height int) []string {
+	border := borderFor(c.panel == focusSource)
+	if c.detail == nil || strings.TrimSpace(c.detail.Source) == "" {
+		return scrollPanel(width, height, "goal", border, []line{{"no source recorded for this loop", styleDim}}, 0)
 	}
-
-	run := view.Run
-	textStyle, border := statusColour(run.Status)
-
-	name := run.MachineName
-	if name == "" {
-		name = "anonymous " + run.MachineKind
-	}
-	state := run.StateName
-	if state == "" {
-		state = run.StateID
-	}
-	body := []line{
-		{name, styleBold},
-		{fmt.Sprintf("%s · %s", run.Status, state), textStyle},
-	}
-	meter := []string{fmt.Sprintf("iteration %d", run.Iteration)}
-	for _, limit := range view.Limits {
-		meter = append(meter, limitRemaining(limit, run.Iteration, c.now()))
-	}
-	body = append(body, line{strings.Join(meter, " · "), styleDim})
-
-	for _, check := range view.Verifications {
-		mark, style := "✓", styleGood
-		if check.Error != "" || !check.Passed {
-			mark, style = "✗", styleBad
+	var body []line
+	for _, raw := range strings.Split(strings.TrimRight(c.detail.Source, "\n"), "\n") {
+		style := ""
+		if strings.HasPrefix(strings.TrimSpace(raw), "//") {
+			style = styleDim
 		}
-		label := mark + " " + check.Name
-		if check.Command != "" {
-			label += "  " + check.Command
-		}
-		body = append(body, line{label, style})
-		if !check.Passed {
-			if output := lastLine(check.Output); output != "" {
-				body = append(body, line{"  " + output, styleDim})
-			} else if check.Error != "" {
-				body = append(body, line{"  " + firstLine(check.Error), styleDim})
-			}
-		}
+		body = append(body, line{raw, style})
 	}
-	if view.Summary.Events > 0 {
-		body = append(body, line{fmt.Sprintf("%d tool calls · %d denied · %d checks", view.Summary.ToolCalls, view.Summary.Denied, view.Summary.Verifications), styleDim})
-	}
-	if run.TerminationReason != "" {
-		body = append(body, line{run.TerminationReason, styleDim})
-	}
-	return panel(width, "loop", border, body)
+	return scrollPanel(width, height, "goal", border, body, c.srcScroll)
 }
 
-func (c *console) footer(width int, quip int) []string {
+func (c *console) renderLogs(width, height int) []string {
+	border := borderFor(c.panel == focusLogs)
+	if c.detail == nil || len(c.detail.Logs) == 0 {
+		note := "no activity yet"
+		if c.detail != nil && c.detail.Status == "armed" {
+			note = "armed — starts with the agent's next message"
+		}
+		return scrollPanel(width, height, "logs", border, []line{{note, styleDim}}, 0)
+	}
+	body := make([]line, 0, len(c.detail.Logs))
+	for _, log := range c.detail.Logs {
+		body = append(body, line{log.Text, levelStyle(log.Level)})
+	}
+	offset := c.logScroll
+	if !c.logUserScrolled {
+		// Pin to the latest line until the person scrolls up.
+		if maximum := len(body) - (height - 2); maximum > 0 {
+			offset = maximum
+		}
+	}
+	return scrollPanel(width, height, "logs", border, body, offset)
+}
+
+// barRow is the bottom line: the editor while typing, otherwise the last
+// message or the keys.
+func (c *console) barRow(width int) string {
 	switch c.mode {
 	case modeLoop:
-		return editorPanel(width, "new loop", c.line, "a command to make pass, a .hmstr path, or goal { … }")
+		return editorBar(width, "new loop", c.line)
 	case modeNote:
-		return editorPanel(width, "why reject?", c.line, "the agent re-derives the work from your reason")
+		return editorBar(width, "why reject?", c.line)
 	}
-	rows := []string{}
-	for _, wrapped := range wrap(quips[quip], width-4) {
-		rows = append(rows, styledRow("  "+wrapped, width, styleItalic))
-	}
-	rows = append(rows, blankRow(width))
-	rows = append(rows, keyRow(width, []keyHint{{"n", "loop"}, {"k", "kill"}, {"tab", "codex"}}))
-	return rows
-}
-
-type keyHint struct{ key, label string }
-
-func keyRow(width int, hints []keyHint) string {
-	var b strings.Builder
-	visible := 0
-	b.WriteString("  ")
-	visible += 2
-	for index, hint := range hints {
-		if index > 0 {
-			b.WriteString("   ")
-			visible += 3
+	if trap := c.openTrap(); trap != nil {
+		answer := "a approve · r reject"
+		if trap.Kind == store.TrapSelection {
+			answer = "press the number"
 		}
-		b.WriteString(styleKey + hint.key + reset + " " + styleDim + hint.label + reset)
-		visible += utf8.RuneCountInString(hint.key) + 1 + utf8.RuneCountInString(hint.label)
+		return fit("  ! "+firstLine(trap.Prompt)+"   "+answer, width, styleWarn)
 	}
-	if visible < width {
-		b.WriteString(strings.Repeat(" ", width-visible))
+	if !c.hooks.Installed {
+		return fit("  hooks not installed — press s to govern this workspace", width, styleWarn)
 	}
-	return b.String()
+	if c.message != "" {
+		return fit("  "+firstLine(c.message), width, styleItalic)
+	}
+	hints := "n new · d stop · x disarm · ↑↓ move · tab panel · ctrl-] codex"
+	return fit("  "+hints, width, styleDim)
 }
 
-func editorPanel(width int, title string, text []rune, hint string) []string {
-	body := editorLines("› ", text, width-4)
-	body = append(body, line{hint, styleDim})
-	return panel(width, title, borderRun, body)
+func editorBar(width int, label string, text []rune) string {
+	prefix := "  " + label + " › "
+	room := width - utf8.RuneCountInString(prefix) - 1
+	if room < 1 {
+		room = 1
+	}
+	shown := string(text) + "█"
+	if utf8.RuneCountInString(shown) > room {
+		runes := []rune(shown)
+		shown = string(runes[len(runes)-room:])
+	}
+	return fit(styleKey+"  "+label+" › "+reset+shown, width, "")
 }
 
-// panel draws a rounded box with its title in the top border. Every row it
-// returns is exactly width visible cells.
-func panel(width int, title, border string, body []line) []string {
-	if width < 4 {
+// scrollPanel draws a rounded box of exactly height rows, showing the slice of
+// body starting at offset. The title carries a position indicator when the
+// content does not fit.
+func scrollPanel(width, height int, title, border string, body []line, offset int) []string {
+	if width < 4 || height < 2 {
 		return nil
 	}
-	inner := width - 4 // "│ " + content + " │"
-	rows := make([]string, 0, len(body)+2)
+	inner := width - 4
+	viewport := height - 2
+	if viewport < 1 {
+		viewport = 1
+	}
+	maxOffset := len(body) - viewport
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+	if offset < 0 {
+		offset = 0
+	}
 
-	label := ""
-	if title != "" {
-		label = "─ " + title + " "
+	label := "─ " + title + " "
+	if len(body) > viewport {
+		label = fmt.Sprintf("─ %s %d-%d/%d ", title, offset+1, offset+viewport, len(body))
 	}
 	if runeLen(label) > width-3 {
 		label = truncateRunes(label, width-3)
 	}
-	dashes := width - 2 - runeLen(label)
-	rows = append(rows, border+"╭"+label+strings.Repeat("─", dashes)+"╮"+reset)
-
-	for _, item := range body {
-		wrapped := wrap(item.text, inner)
-		if len(wrapped) == 0 {
-			wrapped = []string{""}
+	rows := make([]string, 0, height)
+	rows = append(rows, border+"╭"+label+strings.Repeat("─", width-2-runeLen(label))+"╮"+reset)
+	for i := 0; i < viewport; i++ {
+		content := fit("", inner, "")
+		if idx := offset + i; idx < len(body) {
+			content = fit(body[idx].text, inner, body[idx].style)
 		}
-		for _, piece := range wrapped {
-			content := fit(piece, inner, item.style)
-			rows = append(rows, border+"│"+reset+" "+content+" "+border+"│"+reset)
-		}
+		rows = append(rows, border+"│"+reset+" "+content+" "+border+"│"+reset)
 	}
 	rows = append(rows, border+"╰"+strings.Repeat("─", width-2)+"╯"+reset)
 	return rows
 }
 
-// frame stacks the body and footer to exactly rows lines, padding the gap
-// between them so the footer sits at the bottom, and trimming the body from
-// its end if it does not fit.
-func frame(width, rows int, body, footer []string) []string {
-	if len(footer) > rows {
-		footer = footer[:rows]
+// windowOffset keeps the selected index inside a viewport of the given size.
+func windowOffset(selected, total, viewport int) int {
+	if viewport < 1 || total <= viewport {
+		return 0
 	}
-	capacity := rows - len(footer)
-	if len(body) > capacity {
-		body = body[:capacity]
+	offset := selected - viewport/2
+	if offset < 0 {
+		offset = 0
 	}
-	out := make([]string, 0, rows)
-	out = append(out, body...)
-	for len(out) < capacity {
-		out = append(out, blankRow(width))
+	if offset > total-viewport {
+		offset = total - viewport
 	}
-	out = append(out, footer...)
-	for len(out) < rows {
-		out = append(out, blankRow(width))
-	}
-	return out
+	return offset
 }
 
-func statusColour(status string) (text, border string) {
+func borderFor(active bool) string {
+	if active {
+		return borderRun
+	}
+	return borderIdle
+}
+
+func loopMarker(status string) (glyph, style string) {
 	switch status {
 	case "complete":
-		return styleGood, borderGood
-	case "trapped", "waiting":
-		return styleWarn, borderWarn
+		return "●", styleGood
 	case "running":
-		return styleKey, borderRun
+		return "●", styleKey
+	case "armed":
+		return "○", styleWarn
+	case "trapped", "waiting":
+		return "●", styleWarn
 	default:
-		return styleBad, borderBad
+		return "●", styleBad
 	}
 }
 
-func blankRow(width int) string {
-	return strings.Repeat(" ", width)
+func levelStyle(level string) string {
+	switch level {
+	case "good":
+		return styleGood
+	case "bad":
+		return styleBad
+	case "warn":
+		return styleWarn
+	case "dim":
+		return styleDim
+	}
+	return ""
 }
 
-func styledRow(text string, width int, style string) string {
-	return fit(text, width, style)
-}
+func blankRow(width int) string { return strings.Repeat(" ", width) }
 
 func runeLen(text string) int { return utf8.RuneCountInString(text) }
 
@@ -300,62 +301,4 @@ func truncateRunes(text string, width int) string {
 		return text
 	}
 	return string([]rune(text)[:width])
-}
-
-// lastLine is where a failing command puts its verdict.
-func lastLine(text string) string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return ""
-	}
-	lines := strings.Split(text, "\n")
-	return strings.TrimSpace(lines[len(lines)-1])
-}
-
-func editorLines(prompt string, text []rune, width int) []line {
-	content := string(text) + "█"
-	var lines []line
-	first := true
-	for _, wrapped := range wrapRunes(content, width-utf8.RuneCountInString(prompt)) {
-		prefix := prompt
-		if !first {
-			prefix = strings.Repeat(" ", utf8.RuneCountInString(prompt))
-		}
-		lines = append(lines, line{prefix + wrapped, ""})
-		first = false
-	}
-	return lines
-}
-
-// wrapRunes breaks anywhere, unlike wrap: an edited line has no words to
-// respect yet.
-func wrapRunes(text string, width int) []string {
-	if width < 1 {
-		return []string{text}
-	}
-	runes := []rune(text)
-	var lines []string
-	for len(runes) > width {
-		lines = append(lines, string(runes[:width]))
-		runes = runes[width:]
-	}
-	return append(lines, string(runes))
-}
-
-func loopLabel(launch store.Loop) string {
-	if launch.Source == "" {
-		return launch.Machine.Name
-	}
-	source := strings.TrimSpace(launch.Source)
-	if strings.HasPrefix(source, "goal") {
-		// Show the verifier behind a shorthand, or just say it is a goal.
-		if start := strings.Index(source, "bash.check("); start >= 0 {
-			rest := source[start+len("bash.check("):]
-			if end := strings.Index(rest, ");"); end >= 0 {
-				return rest[:end]
-			}
-		}
-		return "a goal"
-	}
-	return source
 }

@@ -19,6 +19,8 @@ type Backend interface {
 	Disarm(ctx context.Context, console string) error
 	Resolve(ctx context.Context, trapID, resolution, note string) error
 	Kill(ctx context.Context, codexSessionID, reason string) error
+	ListLoops(ctx context.Context, workspaceRoot string) ([]store.LoopSummary, error)
+	LoadLoop(ctx context.Context, id string) (*store.LoopDetail, error)
 }
 
 // DaemonBackend is the Backend over a live daemon.
@@ -50,6 +52,22 @@ func (b DaemonBackend) Resolve(ctx context.Context, trapID, resolution, note str
 
 func (b DaemonBackend) Kill(ctx context.Context, codexSessionID, reason string) error {
 	return b.Client.Call(ctx, requestID(), "run.kill", map[string]string{"session_id": codexSessionID, "reason": reason}, nil)
+}
+
+func (b DaemonBackend) ListLoops(ctx context.Context, workspaceRoot string) ([]store.LoopSummary, error) {
+	var loops []store.LoopSummary
+	if err := b.Client.Call(ctx, requestID(), "loops.list", map[string]any{"workspace_root": workspaceRoot}, &loops); err != nil {
+		return nil, err
+	}
+	return loops, nil
+}
+
+func (b DaemonBackend) LoadLoop(ctx context.Context, id string) (*store.LoopDetail, error) {
+	var detail store.LoopDetail
+	if err := b.Client.Call(ctx, requestID(), "loops.get", map[string]string{"id": id}, &detail); err != nil {
+		return nil, err
+	}
+	return &detail, nil
 }
 
 func requestID() string {
