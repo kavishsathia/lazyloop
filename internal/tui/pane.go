@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"hamster/internal/store"
@@ -98,6 +99,7 @@ func (c *console) renderList(width, height int) []string {
 			{"press n to start one", styleKey},
 		}, 0)
 	}
+	inner := width - 4
 	body := make([]line, 0, len(c.loops))
 	for _, loop := range c.loops {
 		marker, style := loopMarker(loop.Status)
@@ -105,15 +107,13 @@ func (c *console) renderList(width, height int) []string {
 		if label == "" {
 			label = "(loop)"
 		}
-		text := marker + " " + label
-		if loop.Traps > 0 {
-			text += "  !"
-			style = styleWarn
-		}
 		if loop.ID == c.selectedID {
 			style = styleFocus
 		}
-		body = append(body, line{text, style})
+		if loop.Traps > 0 && loop.ID != c.selectedID {
+			style = styleWarn
+		}
+		body = append(body, line{loopRow(marker, label, loopMeta(loop, c.now()), inner), style})
 	}
 	offset := windowOffset(c.selectedIndex(), len(body), height-2)
 	return scrollPanel(width, height, title, border, body, offset)
@@ -261,6 +261,56 @@ func borderFor(active bool) string {
 		return borderRun
 	}
 	return borderIdle
+}
+
+// loopRow composes a list row of exactly width cells: the marker and label on
+// the left, the meta (tool calls and elapsed time) right-aligned.
+func loopRow(marker, label, meta string, width int) string {
+	left := marker + " " + label
+	if meta == "" {
+		return truncateRunes(left, width)
+	}
+	room := width - runeLen(meta) - 1
+	if room < 1 {
+		room = 1
+	}
+	left = truncateRunes(left, room)
+	gap := width - runeLen(left) - runeLen(meta)
+	if gap < 1 {
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + meta
+}
+
+// loopMeta is the live cost of a loop: how many tool calls it has made and how
+// long it has been running. A finished loop's clock is stopped; a running one
+// counts against now, so the list ticks up as you watch.
+func loopMeta(loop store.LoopSummary, now time.Time) string {
+	if loop.Started == nil {
+		return ""
+	}
+	end := now
+	if loop.Ended != nil {
+		end = *loop.Ended
+	}
+	elapsed := end.Sub(*loop.Started)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	if loop.ToolCalls > 0 {
+		return fmt.Sprintf("%dc %s", loop.ToolCalls, clockDuration(elapsed))
+	}
+	return clockDuration(elapsed)
+}
+
+// clockDuration formats an elapsed time compactly: m:ss under an hour, h:mm
+// over it.
+func clockDuration(d time.Duration) string {
+	seconds := int(d.Seconds())
+	if seconds < 3600 {
+		return fmt.Sprintf("%d:%02d", seconds/60, seconds%60)
+	}
+	return fmt.Sprintf("%dh%02dm", seconds/3600, (seconds%3600)/60)
 }
 
 func loopMarker(status string) (glyph, style string) {

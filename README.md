@@ -78,7 +78,8 @@ even while you are watching it.
 The dashboard is three panels, lazygit style. On the left, the list of loops
 — every loop you have ever run in this directory, persisted across sessions,
 each with a coloured dot for its status (blue running, green complete, red
-failed, amber waiting on you). Top-right, the selected loop's goal or script.
+failed, amber waiting on you) and, beside it, how many tool calls it has made
+and how long it has run, ticking live while it works. Top-right, the selected loop's goal or script.
 Bottom-right, its log: the tool calls, the verifier results with their
 output, the traps. Both right panels scroll.
 

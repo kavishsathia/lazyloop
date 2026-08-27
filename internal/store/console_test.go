@@ -243,3 +243,63 @@ func TestObserveConsoleReportsRunTrapsAndLaunch(t *testing.T) {
 		t.Fatalf("trap view = count %d, traps %+v", view.TrapCount, view.Traps)
 	}
 }
+
+func TestBuildLogsDedupsAndNamesPatches(t *testing.T) {
+	events := []EventObservation{
+		{EventName: "PreToolUse", ToolName: "Bash", Command: "go test ./...", Decision: "allow"},
+		{EventName: "PostToolUse", ToolName: "Bash", Command: "go test ./...", Decision: "allow",
+			Verifications: []VerificationObservation{{Name: "passes", Command: "go test ./...", Passed: false, Output: "line1\nFAIL: TestTurns"}}},
+		{EventName: "PreToolUse", ToolName: "codex", Command: "codex whatever", Decision: "deny", Reason: "not allowed"},
+		{EventName: "PostToolUse", ToolName: "apply_patch", Command: "*** Begin Patch\n*** Update File: demo/wheel/wheel.go\n@@\n-x\n+y\n*** End Patch", Decision: "allow"},
+	}
+	logs := buildLogs(events)
+	var texts []string
+	for _, l := range logs {
+		texts = append(texts, l.Text)
+	}
+	joined := strings.Join(texts, "\n")
+
+	// The allowed Bash call appears once (post), not twice.
+	if got := strings.Count(joined, "· go test ./..."); got != 1 {
+		t.Fatalf("go test logged %d times, want 1:\n%s", got, joined)
+	}
+	// The failing verifier shows its last output line.
+	if !strings.Contains(joined, "✗ passes") || !strings.Contains(joined, "FAIL: TestTurns") {
+		t.Fatalf("verifier detail missing:\n%s", joined)
+	}
+	// A denied call is named once, as denied.
+	if !strings.Contains(joined, "denied: codex whatever") {
+		t.Fatalf("denied call missing:\n%s", joined)
+	}
+	// The patch is named by its file, not dumped.
+	if !strings.Contains(joined, "apply_patch wheel.go") || strings.Contains(joined, "Begin Patch") {
+		t.Fatalf("patch not summarised:\n%s", joined)
+	}
+}
+
+func TestListLoopsCarriesToolCallsAndDuration(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "hamster.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	ctx := context.Background()
+	if _, err := state.ArmLoop(ctx, "console-1", "/repo", consoleMachine(), "src", "go test"); err != nil {
+		t.Fatal(err)
+	}
+	run, err := state.ClaimLoop(ctx, "console-1", "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loops, err := state.ListLoops(ctx, "/repo", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loops) != 1 || loops[0].Started == nil {
+		t.Fatalf("running loop has no start time: %+v", loops[0])
+	}
+	if loops[0].Ended != nil {
+		t.Fatal("a running loop should have no fixed end")
+	}
+	_ = run
+}

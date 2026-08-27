@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -145,12 +146,15 @@ func (s *Store) ClaimLoop(ctx context.Context, console, codexSessionID string) (
 // LoopSummary is one row in the list of loops. Status is "armed" for a loop
 // nobody has claimed, otherwise the status of the run executing it.
 type LoopSummary struct {
-	ID        string    `json:"id"`
-	Label     string    `json:"label"`
-	Status    string    `json:"status"`
-	RunID     string    `json:"run_id,omitempty"`
-	Traps     int       `json:"traps"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string     `json:"id"`
+	Label     string     `json:"label"`
+	Status    string     `json:"status"`
+	RunID     string     `json:"run_id,omitempty"`
+	Traps     int        `json:"traps"`
+	ToolCalls int        `json:"tool_calls"`
+	Started   *time.Time `json:"started,omitempty"`
+	Ended     *time.Time `json:"ended,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // ListLoops returns every loop armed in a workspace, newest first, each with
@@ -161,7 +165,9 @@ func (s *Store) ListLoops(ctx context.Context, workspaceRoot string, limit int) 
 	}
 	query := `SELECT l.id, l.label, COALESCE(r.status, 'armed'),
 COALESCE(l.run_id, ''), l.created_at,
-(SELECT COUNT(*) FROM traps t WHERE t.run_id=l.run_id AND t.status='open')
+COALESCE(r.created_at, ''), COALESCE(r.updated_at, ''), COALESCE(r.status, ''),
+(SELECT COUNT(*) FROM traps t WHERE t.run_id=l.run_id AND t.status='open'),
+(SELECT COUNT(*) FROM events e WHERE e.run_id=l.run_id AND e.kind='PostToolUse')
 FROM loops l LEFT JOIN runs r ON r.id=l.run_id`
 	args := []any{}
 	if workspaceRoot != "" {
@@ -178,16 +184,39 @@ FROM loops l LEFT JOIN runs r ON r.id=l.run_id`
 	summaries := []LoopSummary{}
 	for rows.Next() {
 		var summary LoopSummary
-		var created string
-		if err := rows.Scan(&summary.ID, &summary.Label, &summary.Status, &summary.RunID, &created, &summary.Traps); err != nil {
+		var created, runCreated, runUpdated, runStatus string
+		if err := rows.Scan(&summary.ID, &summary.Label, &summary.Status, &summary.RunID, &created,
+			&runCreated, &runUpdated, &runStatus, &summary.Traps, &summary.ToolCalls); err != nil {
 			return nil, err
 		}
 		if summary.CreatedAt, err = parseStoredTime(created); err != nil {
 			return nil, err
 		}
+		if runCreated != "" {
+			if started, err := parseStoredTime(runCreated); err == nil {
+				summary.Started = &started
+			}
+		}
+		// A finished run's clock stops; a live one is timed against now by the
+		// reader, so its end is left open.
+		if runUpdated != "" && isTerminalRunStatus(runStatus) {
+			if ended, err := parseStoredTime(runUpdated); err == nil {
+				summary.Ended = &ended
+			}
+		}
 		summaries = append(summaries, summary)
 	}
 	return summaries, rows.Err()
+}
+
+// isTerminalRunStatus reports whether a run has stopped, so its duration is
+// fixed rather than still counting up.
+func isTerminalRunStatus(status string) bool {
+	switch status {
+	case "", "running", "waiting", "trapped":
+		return false
+	}
+	return true
 }
 
 // LogLine is one entry in a loop's log: what the agent did, and what Hamster
@@ -250,22 +279,20 @@ func (s *Store) LoadLoop(ctx context.Context, id string) (*LoopDetail, error) {
 	return detail, nil
 }
 
-// buildLogs turns a run's events into readable log lines, oldest first.
+// buildLogs turns a run's events into readable log lines, oldest first. A tool
+// call reaches the log once — on its PostToolUse event, or on a PreToolUse that
+// was denied (a denied call never gets a post event). Its allowed PreToolUse is
+// skipped so each call is not listed twice.
 func buildLogs(events []EventObservation) []LogLine {
 	logs := make([]LogLine, 0, len(events))
 	for _, event := range events {
-		switch {
-		case event.Command != "":
-			line := LogLine{Text: "· " + event.Command, Level: "info"}
-			if event.Decision == "deny" {
-				line.Level = "bad"
-				if event.Reason != "" {
-					line.Text = "denied: " + event.Reason
-				}
+		denied := event.Decision == "deny"
+		if (event.EventName == "PostToolUse" || denied) && (event.Command != "" || event.ToolName != "") {
+			if denied {
+				logs = append(logs, LogLine{Text: "denied: " + commandLabel(event), Level: "bad"})
+			} else {
+				logs = append(logs, LogLine{Text: "· " + commandLabel(event), Level: "info"})
 			}
-			logs = append(logs, line)
-		case event.ToolName != "":
-			logs = append(logs, LogLine{Text: "· " + event.ToolName, Level: "info"})
 		}
 		for _, check := range event.Verifications {
 			mark, level := "✓", "good"
@@ -285,6 +312,44 @@ func buildLogs(events []EventObservation) []LogLine {
 		}
 	}
 	return logs
+}
+
+// commandLabel names a tool call in one short line. A patch is named by the
+// files it touches rather than dumping its whole body; any other command shows
+// its first line.
+func commandLabel(event EventObservation) string {
+	command := strings.TrimSpace(event.Command)
+	if strings.HasPrefix(command, "*** Begin Patch") || strings.EqualFold(event.ToolName, "apply_patch") {
+		if files := patchFiles(command); len(files) > 0 {
+			return "apply_patch " + strings.Join(files, ", ")
+		}
+		return "apply_patch"
+	}
+	if command != "" {
+		return firstTextLine(command)
+	}
+	return event.ToolName
+}
+
+// patchFiles pulls the paths an apply_patch touches from its header lines.
+func patchFiles(patch string) []string {
+	var files []string
+	for _, raw := range strings.Split(patch, "\n") {
+		line := strings.TrimSpace(raw)
+		for _, marker := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: ", "*** Move to: "} {
+			if strings.HasPrefix(line, marker) {
+				files = append(files, filepath.Base(strings.TrimSpace(strings.TrimPrefix(line, marker))))
+			}
+		}
+	}
+	return files
+}
+
+func firstTextLine(text string) string {
+	if index := strings.IndexByte(text, '\n'); index >= 0 {
+		return strings.TrimSpace(text[:index])
+	}
+	return strings.TrimSpace(text)
 }
 
 func verifierDetail(check VerificationObservation) string {
