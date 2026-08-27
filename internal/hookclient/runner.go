@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"hamster/internal/daemon"
 	"hamster/internal/hook"
@@ -19,7 +20,8 @@ func Run(ctx context.Context, client daemon.Client, input io.Reader, output io.W
 		return fmt.Errorf("parse Codex hook event: %w", err)
 	}
 	var decision hook.Decision
-	if err := client.Call(ctx, event.RequestID(), "hook.event", hook.HookRequest{Event: event}, &decision); err != nil {
+	request := hook.HookRequest{Event: event, Console: os.Getenv(hook.ConsoleEnvironment)}
+	if err := client.Call(ctx, event.RequestID(), "hook.event", request, &decision); err != nil {
 		return err
 	}
 	result, err := hook.CodexOutput(event.EventName, decision)

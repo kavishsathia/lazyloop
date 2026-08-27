@@ -151,6 +151,23 @@ CREATE TABLE IF NOT EXISTS pending_forks (
 
 CREATE INDEX IF NOT EXISTS pending_forks_session ON pending_forks(session_id, status, created_at);
 
+CREATE TABLE IF NOT EXISTS consoles (
+  console TEXT PRIMARY KEY,
+  codex_session_id TEXT NOT NULL,
+  workspace_root TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS launches (
+  console TEXT PRIMARY KEY,
+  workspace_root TEXT NOT NULL,
+  machine_json BLOB NOT NULL,
+  source TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  claimed_run_id TEXT,
+  claimed_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS traps (
   id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL REFERENCES runs(id),

@@ -142,7 +142,7 @@ func registerFromHook(ctx context.Context, state *store.Store, runner *hamsterru
 	}
 	return hook.Decision{
 		Permission: "allow", Tracked: true, RunID: run.ID,
-		Context: fmt.Sprintf("Hamster started run %s for %s at state %s. Follow this loop until Hamster reports completion or escalation.", run.ID, machineLabel(machine), run.StateID),
+		Context: fmt.Sprintf("Hamster started run %s for %s at state %s. Follow this loop until Hamster reports completion or escalation.", run.ID, MachineLabel(machine), run.StateID),
 	}, nil
 }
 
@@ -406,7 +406,7 @@ func detectCodexVersion() (string, string, error) {
 	return fields[0], fields[len(fields)-1], nil
 }
 
-func machineLabel(machine ir.Machine) string {
+func MachineLabel(machine ir.Machine) string {
 	if machine.Name != "" {
 		return machine.Name
 	}

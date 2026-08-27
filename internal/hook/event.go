@@ -27,7 +27,16 @@ type Event struct {
 
 type HookRequest struct {
 	Event Event `json:"event"`
+	// Console is the lazyloop screen the agent was started from, read from
+	// the agent's environment by the hook process it spawned. Empty outside
+	// lazyloop.
+	Console string `json:"console,omitempty"`
 }
+
+// ConsoleEnvironment is the variable lazyloop sets on the agent it spawns.
+// Hook processes inherit it, which is the only path by which a console token
+// reaches the daemon alongside a Codex session identity.
+const ConsoleEnvironment = "HAMSTER_CONSOLE"
 
 func ParseEvent(payload []byte) (Event, error) {
 	var event Event

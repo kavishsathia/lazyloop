@@ -359,6 +359,31 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 		if err = json.Unmarshal(request.Params, &params); err == nil {
 			result, err = s.store.GetTraceData(ctx, params.TraceID)
 		}
+	case "console.observe":
+		var params struct {
+			Console string `json:"console"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.ObserveConsole(ctx, params.Console)
+		}
+	case "console.arm":
+		var params struct {
+			Console       string     `json:"console"`
+			WorkspaceRoot string     `json:"workspace_root"`
+			Machine       ir.Machine `json:"machine"`
+			Source        string     `json:"source,omitempty"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.ArmLaunch(ctx, params.Console, params.WorkspaceRoot, params.Machine, params.Source)
+		}
+	case "console.disarm":
+		var params struct {
+			Console string `json:"console"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			err = s.store.DisarmLaunch(ctx, params.Console)
+			result = map[string]any{"ok": err == nil}
+		}
 	case "hook.event":
 		var params hook.HookRequest
 		if err = json.Unmarshal(request.Params, &params); err == nil {
@@ -376,6 +401,13 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 			}
 			if err != nil {
 				break
+			}
+			var launched *store.Run
+			if params.Console != "" {
+				launched, err = s.bindConsole(ctx, params)
+				if err != nil {
+					break
+				}
 			}
 			before := s.traceSnapshot(ctx, params.Event)
 			var command control.Command
@@ -436,6 +468,9 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 				}
 				result = decision
 			}
+			if decision, ok := result.(hook.Decision); ok && err == nil && launched != nil {
+				result = announceLaunch(decision, launched)
+			}
 			if err == nil {
 				after := s.traceSnapshot(ctx, params.Event)
 				input := params.Event.Raw
@@ -475,6 +510,54 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 		response.Error = &protocol.Error{Code: "internal", Message: err.Error()}
 	}
 	return response
+}
+
+// bindConsole records which Codex session a lazyloop screen is watching and,
+// when that screen has armed a loop and the root agent is not yet governed,
+// claims it. Claiming happens as work begins — a prompt or a tool call — not
+// as a turn ends, so the agent reads about the loop before doing anything
+// under it.
+func (s *Server) bindConsole(ctx context.Context, params hook.HookRequest) (*store.Run, error) {
+	event := params.Event
+	if event.SessionID == "" {
+		return nil, nil
+	}
+	if err := s.store.BindConsole(ctx, params.Console, event.SessionID, event.WorkspaceRoot); err != nil {
+		return nil, err
+	}
+	if event.AgentID != "" || (event.EventName != "UserPromptSubmit" && event.EventName != "PreToolUse") {
+		return nil, nil
+	}
+	if _, err := s.store.FindCurrentRun(ctx, event.SessionID, ""); err == nil {
+		return nil, nil
+	} else if err != sql.ErrNoRows {
+		return nil, err
+	}
+	claimed, err := s.store.ClaimLaunch(ctx, params.Console, event.SessionID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.runner.Start(ctx, claimed.ID)
+}
+
+func announceLaunch(decision hook.Decision, launched *store.Run) hook.Decision {
+	if decision.Permission == "deny" {
+		return decision
+	}
+	announcement := fmt.Sprintf("Hamster started run %s for %s at state %s from the lazyloop console. Follow this loop until Hamster reports completion or escalation.",
+		launched.ID, control.MachineLabel(launched.Machine), launched.StateID)
+	if decision.Context != "" {
+		announcement += " " + decision.Context
+	}
+	decision.Context = announcement
+	decision.Tracked = true
+	if decision.RunID == "" {
+		decision.RunID = launched.ID
+	}
+	return decision
 }
 
 func isSpawnTool(name string) bool {
