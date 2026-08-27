@@ -70,10 +70,10 @@ lazyloop
 ```
 
 Each loop gets its own Codex — a fresh process, a fresh session, its own
-context — and several run at once. You land on the dashboard; `ctrl-]` flips
-to the Codex running whichever loop you have selected, and `ctrl-]` flips
-back. Every agent runs the whole time, drawn only while its loop is the one
-on screen, so a trap in any loop rings the bell even while you watch another.
+context — and several run at once. You land on the dashboard; selecting an
+agent row and pressing `ctrl-]` opens that agent's Codex, and `ctrl-]` flips
+back. Every agent runs the whole time, drawn only while it is the one on
+screen, so a trap in any loop rings the bell even while you watch another.
 
 The dashboard is three panels, lazygit style. On the left, the list of loops
 — every loop you have ever run in this directory, persisted across sessions,
@@ -85,8 +85,11 @@ loops grow. Top-right, the selected loop's goal or script.
 Bottom-right, its log: the tool calls, the verifier results with their
 output, the traps. Both right panels scroll.
 
-- `↑ ↓` move within the focused panel — selecting a loop, or scrolling its
-  source or log. `Tab` moves focus between the three panels.
+- `↑ ↓` move the cursor over the list — loops and, indented under them, their
+  agents — or scroll the focused right panel. Click a row to select it. `Tab`
+  moves focus between the three panels.
+- `ctrl-]` opens the Codex of the **agent** you have selected (a row under a
+  loop); select an agent row first, then `ctrl-]`, and `ctrl-]` again returns.
 - `n` opens the loop builder. You compose a loop from one-key recipes and
   the goal panel shows the script forming live: `l` a time limit (minutes),
   `a` an attempt limit, `m` a machine check (a shell command that must pass),

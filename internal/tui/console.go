@@ -73,12 +73,19 @@ type console struct {
 
 	panel           panelFocus
 	loops           []store.LoopSummary
-	selectedID      string
+	selLoop         string
+	selAgent        int // -1 on a loop row, >=0 on that loop's agent
 	detail          *store.LoopDetail
 	srcScroll       int
 	logScroll       int
 	logUserScrolled bool
 	lastTraps       int
+
+	// Captured on the last render so a mouse click can find the row it hit.
+	listTop     int
+	listOffset  int
+	listLeftW   int
+	listTargets []target
 
 	dirty func()
 	// Callbacks the runtime supplies.
@@ -89,7 +96,41 @@ type console struct {
 }
 
 func newConsole(backend Backend, dir string, hooks Hooks, dirty func()) *console {
-	return &console{backend: backend, dir: dir, hooks: hooks, now: time.Now, dirty: dirty, screen: screenDashboard}
+	return &console{backend: backend, dir: dir, hooks: hooks, now: time.Now, dirty: dirty, screen: screenDashboard, selAgent: -1}
+}
+
+// A target is a selectable row in the list: a loop, or one of its agents.
+type target struct {
+	loop  string
+	agent int // -1 for the loop's own row
+}
+
+// targets is the flat, navigable list of rows: each loop followed by its
+// agents.
+func (c *console) targets() []target {
+	var t []target
+	for _, loop := range c.loops {
+		t = append(t, target{loop.ID, -1})
+		for index := range loop.Agents {
+			t = append(t, target{loop.ID, index})
+		}
+	}
+	return t
+}
+
+func (c *console) targetIndex() int {
+	for index, tgt := range c.targets() {
+		if tgt.loop == c.selLoop && tgt.agent == c.selAgent {
+			return index
+		}
+	}
+	return 0
+}
+
+// onAgentRow reports whether the cursor is on an agent, not a loop. ctrl-]
+// opens an agent's Codex, so it is only allowed here.
+func (c *console) onAgentRow() bool {
+	return c.selAgent >= 0
 }
 
 // route takes raw bytes from the person's terminal and returns the bytes the
@@ -115,6 +156,11 @@ func (c *console) route(input []byte) []byte {
 			continue
 		}
 		if b == 0x1b {
+			if col, row, button, press, end, ok := parseMouse(input, index); ok {
+				c.mouse(col, row, button, press)
+				index = end
+				continue
+			}
 			if c.mode == modeKeys && index+2 < len(input) && input[index+1] == '[' {
 				switch input[index+2] {
 				case 'A':
@@ -156,6 +202,58 @@ func (c *console) route(input []byte) []byte {
 	return forward
 }
 
+// parseMouse decodes an SGR mouse report (\x1b[<b;x;y M/m) starting at index.
+// It returns the 1-based column and row, the button code, whether it was a
+// press, and the index of the final byte.
+func parseMouse(input []byte, index int) (col, row, button int, press bool, end int, ok bool) {
+	if index+3 >= len(input) || input[index+1] != '[' || input[index+2] != '<' {
+		return 0, 0, 0, false, 0, false
+	}
+	nums := []int{0}
+	for i := index + 3; i < len(input); i++ {
+		switch b := input[i]; {
+		case b >= '0' && b <= '9':
+			nums[len(nums)-1] = nums[len(nums)-1]*10 + int(b-'0')
+		case b == ';':
+			nums = append(nums, 0)
+		case b == 'M' || b == 'm':
+			if len(nums) != 3 {
+				return 0, 0, 0, false, 0, false
+			}
+			return nums[1], nums[2], nums[0], b == 'M', i, true
+		default:
+			return 0, 0, 0, false, 0, false
+		}
+	}
+	return 0, 0, 0, false, 0, false
+}
+
+// mouse acts on a click or scroll in the dashboard.
+func (c *console) mouse(col, row, button int, press bool) {
+	switch button {
+	case 64: // wheel up
+		c.nav(-1)
+		return
+	case 65: // wheel down
+		c.nav(1)
+		return
+	}
+	if !press || button&3 != 0 { // only a left-button press selects
+		return
+	}
+	if col < 1 || col > c.listLeftW {
+		return
+	}
+	// The list panel's content starts on screen row 2 (row 1 is its border).
+	bodyIndex := c.listOffset + (row - 2)
+	if bodyIndex < 0 || bodyIndex >= len(c.listTargets) {
+		return
+	}
+	c.panel = focusList
+	c.setTarget(c.listTargets[bodyIndex])
+	c.dirty()
+}
+
 func (c *console) escape() {
 	switch {
 	case c.mode == modeBuild && c.recipe != 0:
@@ -185,7 +283,11 @@ func (c *console) key(r rune) {
 	}
 	switch r {
 	case prefixKey:
-		c.screen = screenAgent
+		if c.onAgentRow() {
+			c.screen = screenAgent
+		} else {
+			c.message = "select an agent (a row under a loop) to open it"
+		}
 	case 'q':
 		c.requestQuit()
 	case '\t':
@@ -427,35 +529,31 @@ func clampScroll(v int) int {
 }
 
 func (c *console) moveSelection(delta int) {
-	if len(c.loops) == 0 {
+	all := c.targets()
+	if len(all) == 0 {
 		return
 	}
-	index := c.selectedIndex() + delta
+	index := c.targetIndex() + delta
 	if index < 0 {
 		index = 0
 	}
-	if index >= len(c.loops) {
-		index = len(c.loops) - 1
+	if index >= len(all) {
+		index = len(all) - 1
 	}
-	if id := c.loops[index].ID; id != c.selectedID {
-		c.selectedID = id
+	c.setTarget(all[index])
+}
+
+func (c *console) setTarget(tgt target) {
+	if tgt.loop != c.selLoop {
 		c.srcScroll, c.logScroll, c.logUserScrolled = 0, 0, false
 		c.detail = nil
 	}
-}
-
-func (c *console) selectedIndex() int {
-	for index, loop := range c.loops {
-		if loop.ID == c.selectedID {
-			return index
-		}
-	}
-	return 0
+	c.selLoop, c.selAgent = tgt.loop, tgt.agent
 }
 
 func (c *console) selectedSummary() (store.LoopSummary, bool) {
 	for _, loop := range c.loops {
-		if loop.ID == c.selectedID {
+		if loop.ID == c.selLoop {
 			return loop, true
 		}
 	}
@@ -466,7 +564,7 @@ func (c *console) selectedSummary() (store.LoopSummary, bool) {
 func (c *console) selected() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.selectedID
+	return c.selLoop
 }
 
 func (c *console) activeScreen() screenMode {
@@ -486,7 +584,7 @@ func (c *console) setMessage(message string) {
 // runtime after arming so the new loop is the one on screen.
 func (c *console) selectLoop(id string) {
 	c.mu.Lock()
-	c.selectedID = id
+	c.selLoop, c.selAgent = id, -1
 	c.srcScroll, c.logScroll, c.logUserScrolled = 0, 0, false
 	c.detail = nil
 	c.mu.Unlock()
@@ -596,15 +694,20 @@ func (c *console) refresh() {
 	escalated := traps > c.lastTraps
 	c.lastTraps = traps
 	c.loops = loops
-	if c.selectedID == "" || !c.hasLoop(c.selectedID) {
+	if c.selLoop == "" || !c.hasLoop(c.selLoop) {
 		if len(loops) > 0 {
-			c.selectedID = loops[0].ID
+			c.selLoop = loops[0].ID
 		} else {
-			c.selectedID = ""
+			c.selLoop = ""
 		}
+		c.selAgent = -1
 		c.srcScroll, c.logScroll, c.logUserScrolled = 0, 0, false
 	}
-	selID := c.selectedID
+	// An agent row can vanish when a loop's agent count shrinks.
+	if summary, ok := c.selectedSummary(); ok && c.selAgent >= len(summary.Agents) {
+		c.selAgent = -1
+	}
+	selID := c.selLoop
 	c.mu.Unlock()
 
 	var detail *store.LoopDetail
@@ -612,7 +715,7 @@ func (c *console) refresh() {
 		detail, _ = c.backend.LoadLoop(ctx, selID)
 	}
 	c.mu.Lock()
-	if selID == c.selectedID {
+	if selID == c.selLoop {
 		c.detail = detail
 	}
 	c.mu.Unlock()

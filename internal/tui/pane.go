@@ -101,6 +101,7 @@ func (c *console) renderList(width, height int) []string {
 	}
 	inner := width - 4
 	body := make([]line, 0, len(c.loops))
+	targets := make([]target, 0, len(c.loops))
 	selectedRow := 0
 	for _, loop := range c.loops {
 		marker, style := loopMarker(loop.Status)
@@ -108,13 +109,14 @@ func (c *console) renderList(width, height int) []string {
 		if label == "" {
 			label = "(loop)"
 		}
-		if loop.ID == c.selectedID {
+		if loop.ID == c.selLoop && c.selAgent == -1 {
 			style = styleFocus
 			selectedRow = len(body)
 		} else if loop.Traps > 0 {
 			style = styleWarn
 		}
 		body = append(body, line{loopRow(marker, label, loopMeta(loop, c.now()), inner), style})
+		targets = append(targets, target{loop.ID, -1})
 		// Each loop's agents, indented beneath it.
 		for index, agent := range loop.Agents {
 			branch := "├"
@@ -130,10 +132,22 @@ func (c *console) renderList(width, height int) []string {
 			if gap < 1 {
 				gap = 1
 			}
-			body = append(body, line{text + strings.Repeat(" ", gap) + agent.Status, agentStyle(agent.Status)})
+			rowStyle := agentStyle(agent.Status)
+			if loop.ID == c.selLoop && c.selAgent == index {
+				rowStyle = styleFocus
+				selectedRow = len(body)
+			}
+			body = append(body, line{text + strings.Repeat(" ", gap) + agent.Status, rowStyle})
+			targets = append(targets, target{loop.ID, index})
 		}
 	}
 	offset := windowOffset(selectedRow, len(body), height-2)
+	// Record where each row landed so a mouse click can find it. Content
+	// starts one row below the panel's top border.
+	c.listTop = 1
+	c.listOffset = offset
+	c.listLeftW = width
+	c.listTargets = targets
 	return scrollPanel(width, height, title, border, body, offset)
 }
 

@@ -88,9 +88,11 @@ func Run(ctx context.Context, options Options) error {
 	defer term.Restore(stdin, previous)
 
 	out := bufio.NewWriterSize(os.Stdout, 1<<16)
-	fmt.Fprint(out, "\x1b[?1049h\x1b[?25l\x1b[2J")
+	// Alt screen, hidden cursor, and SGR mouse reporting so clicks in the list
+	// select the row they hit.
+	fmt.Fprint(out, "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h\x1b[2J")
 	out.Flush()
-	defer fmt.Fprint(os.Stdout, "\x1b[0m\x1b[?25h\x1b[?1049l")
+	defer fmt.Fprint(os.Stdout, "\x1b[0m\x1b[?1000l\x1b[?1006l\x1b[?25h\x1b[?1049l")
 
 	var dirty atomic.Bool
 	var bell atomic.Bool

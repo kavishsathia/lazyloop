@@ -323,3 +323,64 @@ func TestHooksMissingIsWarned(t *testing.T) {
 		t.Fatalf("s did not install: %v %v", installed, c.hooks.Installed)
 	}
 }
+
+func agentBackend() *fakeBackend {
+	return &fakeBackend{loops: []store.LoopSummary{{ID: "l1", Label: "go test", Status: "running",
+		Agents: []store.LoopAgent{{AgentID: "ROOT", Root: true, Status: "running"}}}}}
+}
+
+func TestCtrlBracketOnlyOpensAnAgentRow(t *testing.T) {
+	c := testConsole(agentBackend())
+	c.refresh()
+	if c.onAgentRow() {
+		t.Fatal("selection started on an agent row, want the loop row")
+	}
+	// On a loop row, ctrl-] does not open the agent screen.
+	c.route([]byte{prefixKey})
+	if c.screen == screenAgent {
+		t.Fatal("ctrl-] flipped from a loop row")
+	}
+	if !strings.Contains(c.message, "select an agent") {
+		t.Fatalf("no hint on a loop row: %q", c.message)
+	}
+	// Move down to the agent row; now ctrl-] opens it.
+	c.route([]byte{'j'})
+	if !c.onAgentRow() {
+		t.Fatal("j did not move onto the agent row")
+	}
+	c.route([]byte{prefixKey})
+	if c.screen != screenAgent {
+		t.Fatal("ctrl-] did not open the agent")
+	}
+}
+
+func TestClickingSelectsTheRow(t *testing.T) {
+	c := testConsole(agentBackend())
+	c.refresh()
+	c.render(fullLayout(30, 120), 0) // captures the list geometry
+	// Row 2 is the loop, row 3 its agent (row 1 is the panel border).
+	c.mouse(2, 3, 0, true)
+	if !c.onAgentRow() {
+		t.Fatalf("clicking the agent row did not select it: agent=%d", c.selAgent)
+	}
+	c.mouse(2, 2, 0, true)
+	if c.onAgentRow() {
+		t.Fatal("clicking the loop row still shows an agent row selected")
+	}
+	// A click outside the list changes nothing.
+	before := c.selLoop
+	c.mouse(200, 3, 0, true)
+	if c.selLoop != before {
+		t.Fatal("a click outside the list moved the selection")
+	}
+}
+
+func TestParseMouseDecodesSGR(t *testing.T) {
+	col, row, button, press, end, ok := parseMouse([]byte("\x1b[<0;5;3M"), 0)
+	if !ok || col != 5 || row != 3 || button != 0 || !press || end != 8 {
+		t.Fatalf("parseMouse = %d,%d,%d,%v,%d,%v", col, row, button, press, end, ok)
+	}
+	if _, _, _, _, _, ok := parseMouse([]byte("\x1b[A"), 0); ok {
+		t.Fatal("an arrow key was parsed as a mouse event")
+	}
+}
