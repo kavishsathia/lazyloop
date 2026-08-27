@@ -32,23 +32,27 @@ func TestLayoutSplitsAndSumsToWidth(t *testing.T) {
 
 var escapes = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
 
-func TestLeftPaneLinesAreExactlyPaneWide(t *testing.T) {
+func visible(lines []string) string {
+	return escapes.ReplaceAllString(strings.Join(lines, "\n"), "")
+}
+
+func TestPaneLinesAreExactlyPaneWide(t *testing.T) {
 	lay := computeLayout(24, 100)
+	c := newConsole(nil, "console", "/tmp/some-project", Hooks{Installed: true}, func() {})
 	for quip := range quips {
-		for i, line := range leftPane(lay, quip, "/tmp/some-project") {
-			visible := escapes.ReplaceAllString(line, "")
-			if got := utf8.RuneCountInString(visible); got != lay.left {
-				t.Fatalf("quip %d line %d is %d cells wide, want %d: %q", quip, i, got, lay.left, visible)
+		lines := c.render(lay, quip)
+		if len(lines) != lay.rows {
+			t.Fatalf("quip %d: pane has %d lines, want %d", quip, len(lines), lay.rows)
+		}
+		for i, line := range lines {
+			plain := escapes.ReplaceAllString(line, "")
+			if got := utf8.RuneCountInString(plain); got != lay.left {
+				t.Fatalf("quip %d line %d is %d cells wide, want %d: %q", quip, i, got, lay.left, plain)
 			}
 		}
 	}
-	lines := leftPane(lay, 0, "/tmp/some-project")
-	if len(lines) != lay.rows {
-		t.Fatalf("left pane has %d lines, want %d", len(lines), lay.rows)
-	}
-	joined := escapes.ReplaceAllString(strings.Join(lines, "\n"), "")
-	if !strings.Contains(joined, "some-project") {
-		t.Fatal("left pane does not name the directory")
+	if text := visible(c.render(lay, 0)); !strings.Contains(text, "some-project") || !strings.Contains(text, "ctrl-]") {
+		t.Fatalf("idle pane lacks the directory or the prefix hint:\n%s", text)
 	}
 }
 

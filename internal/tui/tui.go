@@ -1,10 +1,12 @@
-// Package tui is the split screen behind a bare `hamster`: a hamster on the
-// left, the agent on the right, in the directory you ran it from.
+// Package tui is the split screen behind a bare `lazyloop`: the console on
+// the left, the agent on the right, in the directory you ran it from.
 //
 // The agent is the stock CLI running on a pseudo-terminal. Its output is
 // decoded by an in-process terminal emulator and painted into the right pane,
 // so its own rendering — colours, alt screen, cursor — survives intact.
-// Everything typed goes straight to the agent; Hamster draws chrome only.
+// Everything typed goes straight to the agent until the prefix key hands
+// focus to the console; Hamster draws chrome and answers questions, nothing
+// more.
 package tui
 
 import (
@@ -17,11 +19,11 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -29,11 +31,14 @@ import (
 	"github.com/creack/pty"
 	"github.com/vito/midterm"
 	"golang.org/x/term"
+
+	"hamster/internal/hook"
 )
 
 const (
 	frameInterval = 33 * time.Millisecond
 	quipInterval  = 12 * time.Second
+	pollInterval  = 500 * time.Millisecond
 	divider       = "│"
 	minLeft       = 16
 	minRight      = 40
@@ -45,6 +50,12 @@ type Options struct {
 	Dir string
 	// Agent is the command to run on the right, as argv. Defaults to codex.
 	Agent []string
+	// Backend reaches the daemon. Nil leaves the console decorative.
+	Backend Backend
+	// Hooks says whether the agent's hooks reach the daemon, and how to fix that.
+	Hooks Hooks
+	// Token identifies this screen to hooks. Generated when empty.
+	Token string
 }
 
 type layout struct {
@@ -89,19 +100,23 @@ func Run(ctx context.Context, options Options) error {
 	}
 	stdin := int(os.Stdin.Fd())
 	if !term.IsTerminal(stdin) {
-		return errors.New("hamster needs a terminal; run it interactively")
+		return errors.New("lazyloop needs a terminal; run it interactively")
 	}
 	cols, rows, err := term.GetSize(stdin)
 	if err != nil {
 		return err
 	}
 	lay := computeLayout(rows, cols)
+	token := options.Token
+	if token == "" {
+		token = NewConsoleToken()
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	command := exec.CommandContext(ctx, agent[0], agent[1:]...)
 	command.Dir = options.Dir
-	command.Env = os.Environ()
+	command.Env = append(os.Environ(), hook.ConsoleEnvironment+"="+token)
 	ptmx, err := pty.StartWithSize(command, &pty.Winsize{Rows: uint16(lay.rows), Cols: uint16(lay.right)})
 	if err != nil {
 		return fmt.Errorf("start %s: %w", agent[0], err)
@@ -131,8 +146,9 @@ func Run(ctx context.Context, options Options) error {
 		fmt.Fprint(os.Stdout, "\x1b[0m\x1b[?25h\x1b[?1049l")
 	}()
 
-	var mu sync.Mutex
-	dirty := true
+	var dirty atomic.Bool
+	dirty.Store(true)
+	console := newConsole(options.Backend, token, options.Dir, options.Hooks, func() { dirty.Store(true) })
 	quip := rand.Intn(len(quips))
 
 	exited := make(chan struct{})
@@ -143,9 +159,7 @@ func Run(ctx context.Context, options Options) error {
 			n, err := ptmx.Read(buffer)
 			if n > 0 {
 				_, _ = emulator.Write(buffer[:n])
-				mu.Lock()
-				dirty = true
-				mu.Unlock()
+				dirty.Store(true)
 			}
 			if err != nil {
 				// EIO is how a pty says the child has gone.
@@ -158,8 +172,10 @@ func Run(ctx context.Context, options Options) error {
 		for {
 			n, err := os.Stdin.Read(buffer)
 			if n > 0 {
-				if _, err := ptmx.Write(buffer[:n]); err != nil {
-					return
+				if forward := console.route(buffer[:n]); len(forward) > 0 {
+					if _, err := ptmx.Write(forward); err != nil {
+						return
+					}
 				}
 			}
 			if err != nil {
@@ -167,6 +183,21 @@ func Run(ctx context.Context, options Options) error {
 			}
 		}
 	}()
+	if options.Backend != nil {
+		go func() {
+			console.refresh()
+			ticker := time.NewTicker(pollInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					console.refresh()
+				}
+			}
+		}()
+	}
 
 	winch := make(chan os.Signal, 1)
 	signal.Notify(winch, syscall.SIGWINCH)
@@ -174,8 +205,11 @@ func Run(ctx context.Context, options Options) error {
 
 	frames := time.NewTicker(frameInterval)
 	defer frames.Stop()
-	quips := time.NewTicker(quipInterval)
-	defer quips.Stop()
+	quipTimer := time.NewTicker(quipInterval)
+	defer quipTimer.Stop()
+	// Limits count down whether or not anything else changes.
+	clock := time.NewTicker(time.Second)
+	defer clock.Stop()
 
 	for {
 		select {
@@ -189,27 +223,51 @@ func Run(ctx context.Context, options Options) error {
 			if err != nil {
 				continue
 			}
-			mu.Lock()
 			lay = computeLayout(rows, cols)
 			_ = pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(lay.rows), Cols: uint16(lay.right)})
 			emulator.Resize(lay.rows, lay.right)
 			fmt.Fprint(out, "\x1b[2J")
-			dirty = true
-			mu.Unlock()
-		case <-quips.C:
-			mu.Lock()
+			dirty.Store(true)
+		case <-quipTimer.C:
 			quip = nextQuip(quip)
-			dirty = true
-			mu.Unlock()
+			dirty.Store(true)
+		case <-clock.C:
+			dirty.Store(true)
 		case <-frames.C:
-			mu.Lock()
-			if dirty {
-				dirty = false
-				draw(out, lay, emulator, leftPane(lay, quip, options.Dir))
+			if dirty.Swap(false) {
+				draw(out, lay, emulator, console.render(lay, quip))
 			}
-			mu.Unlock()
 		}
 	}
+}
+
+func nextQuip(current int) int {
+	if len(quips) < 2 {
+		return current
+	}
+	next := rand.Intn(len(quips) - 1)
+	if next >= current {
+		next++
+	}
+	return next
+}
+
+func draw(out *bufio.Writer, lay layout, emulator *midterm.Terminal, left []string) {
+	// Synchronized output: the terminal paints the frame at once.
+	fmt.Fprint(out, "\x1b[?2026h\x1b[?25l")
+	for row := 0; row < lay.rows; row++ {
+		fmt.Fprintf(out, "\x1b[%d;1H", row+1)
+		if row < len(left) {
+			out.WriteString(left[row])
+		} else {
+			out.WriteString(strings.Repeat(" ", lay.left))
+		}
+		fmt.Fprintf(out, "\x1b[0m\x1b[2m%s\x1b[0m\x1b[K", divider)
+		_ = emulator.RenderLine(out, row)
+		out.WriteString("\x1b[0m")
+	}
+	fmt.Fprint(out, "\x1b[?2026l")
+	out.Flush()
 }
 
 // forwardedModes are the private modes an agent may set on the real terminal.
@@ -255,72 +313,6 @@ func (f *modeForwarder) reset() {
 			fmt.Fprintf(f.w, "\x1b[?%dl", mode)
 		}
 	}
-}
-
-func nextQuip(current int) int {
-	if len(quips) < 2 {
-		return current
-	}
-	next := rand.Intn(len(quips) - 1)
-	if next >= current {
-		next++
-	}
-	return next
-}
-
-func draw(out *bufio.Writer, lay layout, emulator *midterm.Terminal, left []string) {
-	// Synchronized output: the terminal paints the frame at once.
-	fmt.Fprint(out, "\x1b[?2026h\x1b[?25l")
-	for row := 0; row < lay.rows; row++ {
-		fmt.Fprintf(out, "\x1b[%d;1H", row+1)
-		if row < len(left) {
-			out.WriteString(left[row])
-		} else {
-			out.WriteString(strings.Repeat(" ", lay.left))
-		}
-		fmt.Fprintf(out, "\x1b[0m\x1b[2m%s\x1b[0m\x1b[K", divider)
-		_ = emulator.RenderLine(out, row)
-		out.WriteString("\x1b[0m")
-	}
-	fmt.Fprint(out, "\x1b[?2026l")
-	out.Flush()
-}
-
-// leftPane lays out the hamster, the directory, and the quip of the moment.
-// Every returned line is exactly lay.left cells wide.
-func leftPane(lay layout, quip int, dir string) []string {
-	width := lay.left
-	if width == 0 {
-		return nil
-	}
-	var lines []string
-	add := func(text, style string) {
-		lines = append(lines, fit(text, width, style))
-	}
-	add("", "")
-	for _, line := range art {
-		add(center(line, width), "\x1b[33m")
-	}
-	add("", "")
-	add(center("hamster", width), "\x1b[1m")
-	add(center(filepath.Base(dir), width), "\x1b[2m")
-	add("", "")
-	for _, line := range wrap(quips[quip], width-4) {
-		add("  "+line, "\x1b[3m")
-	}
-	for len(lines) < lay.rows-2 {
-		add("", "")
-	}
-	if len(lines) < lay.rows {
-		add(center("exit the agent to leave", width), "\x1b[2m")
-	}
-	for len(lines) < lay.rows {
-		add("", "")
-	}
-	if len(lines) > lay.rows {
-		lines = lines[:lay.rows]
-	}
-	return lines
 }
 
 func fit(text string, width int, style string) string {

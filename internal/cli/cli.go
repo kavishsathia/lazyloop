@@ -48,11 +48,7 @@ func Main(arguments []string) int {
 // Run dispatches one invocation. No arguments opens the split screen.
 func Run(ctx context.Context, arguments []string) error {
 	if len(arguments) == 0 {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return err
-		}
-		return tui.Run(ctx, tui.Options{Dir: cwd, Agent: agentCommand()})
+		return consoleCommand(ctx)
 	}
 	switch arguments[0] {
 	case "version":
@@ -60,6 +56,8 @@ func Run(ctx context.Context, arguments []string) error {
 		return nil
 	case "init":
 		return initProject(arguments[1:])
+	case "setup":
+		return setupCommand(arguments[1:])
 	case "ui":
 		return uiCommand(ctx, arguments[1:])
 	case "playground":
@@ -1143,6 +1141,63 @@ func requestID() string {
 	return fmt.Sprintf("cli-%d", time.Now().UnixNano())
 }
 
+// consoleCommand is the bare invocation: the split screen, wired to the
+// daemon, in the current directory.
+func consoleCommand(ctx context.Context) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	home, err := resolveHome("")
+	if err != nil {
+		return err
+	}
+	executable, err := hookExecutable()
+	if err != nil {
+		return err
+	}
+	client, err := daemonClient(ctx, home)
+	if err != nil {
+		return err
+	}
+	hooks := tui.Hooks{
+		Installed: project.HooksInstalled(project.UserHooksPath(home), filepath.Join(findRepositoryRoot(cwd), ".codex", "hooks.json")),
+		Install:   func() error { return project.InstallUserHooks(home, executable) },
+	}
+	return tui.Run(ctx, tui.Options{Dir: cwd, Agent: agentCommand(), Backend: tui.DaemonBackend{Client: client}, Hooks: hooks})
+}
+
+// setupCommand installs the hook once, for every project, in the person's own
+// Codex configuration.
+func setupCommand(arguments []string) error {
+	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
+	homeFlag := flags.String("home", "", "user home directory")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	home, err := resolveHome(*homeFlag)
+	if err != nil {
+		return err
+	}
+	executable, err := hookExecutable()
+	if err != nil {
+		return err
+	}
+	if err := project.InstallUserHooks(home, executable); err != nil {
+		return err
+	}
+	fmt.Printf("Installed the Hamster hook in %s\nEvery Codex session now reports to Hamster; nothing is governed until a loop is bound.\n", project.UserHooksPath(home))
+	return nil
+}
+
+func hookExecutable() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Abs(executable)
+}
+
 // agentCommand is the CLI that runs on the right of the split screen.
 // HAMSTER_AGENT overrides it, e.g. HAMSTER_AGENT="claude" or a whole argv.
 func agentCommand() []string {
@@ -1153,5 +1208,5 @@ func agentCommand() []string {
 }
 
 func usageError() error {
-	return errors.New("usage: hamster <init|ui|playground|man|run|signal|exec|wait|taste|traps|resolve|audits|audit|kill|status|inspect|trace|hook|daemon|version>")
+	return errors.New("usage: hamster <setup|init|ui|playground|man|run|signal|exec|wait|taste|traps|resolve|audits|audit|kill|status|inspect|trace|hook|daemon|version>")
 }

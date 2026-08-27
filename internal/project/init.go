@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 )
 
@@ -23,6 +24,55 @@ func Init(root, executable string) error {
 	}
 	return installHooks(filepath.Join(root, ".codex", "hooks.json"), executable)
 }
+
+// InstallUserHooks registers Hamster in the person's own Codex configuration,
+// so every project is governed without an init and a trust step each. The
+// hook is inert wherever no run is bound, which is what makes a global hook
+// safe.
+func InstallUserHooks(home, executable string) error {
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
+		return err
+	}
+	return installHooks(filepath.Join(home, ".codex", "hooks.json"), executable)
+}
+
+// UserHooksPath is where InstallUserHooks writes.
+func UserHooksPath(home string) string {
+	return filepath.Join(home, ".codex", "hooks.json")
+}
+
+// HooksInstalled reports whether any of the given hooks.json files already
+// route tool calls to a Hamster binary. Any build of hamster or lazyloop
+// counts: they serve the same daemon, and a person who installed hooks from
+// one should not be told to install them again from the other.
+func HooksInstalled(paths ...string) bool {
+	for _, path := range paths {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var configuration struct {
+			Hooks map[string][]any `json:"hooks"`
+		}
+		if json.Unmarshal(contents, &configuration) != nil {
+			continue
+		}
+		for _, rawGroup := range configuration.Hooks["PreToolUse"] {
+			group, _ := rawGroup.(map[string]any)
+			handlers, _ := group["hooks"].([]any)
+			for _, rawHandler := range handlers {
+				handler, _ := rawHandler.(map[string]any)
+				command, _ := handler["command"].(string)
+				if hamsterHook.MatchString(command) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+var hamsterHook = regexp.MustCompile(`(?:^|/)(?:hamster|lazyloop)"? hook$`)
 
 func installHooks(path, executable string) error {
 	configuration := map[string]any{}
