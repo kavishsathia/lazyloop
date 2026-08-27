@@ -3,7 +3,7 @@
 
   <h1>Hamster</h1>
 
-  <p>A small language and runtime for enforceable, resource-bounded Codex loops.</p>
+  <p>A small language and runtime for enforceable, resource-bounded Codex loops — and lazyloop, the screen you run them from.</p>
 
   <p>
     <a href="https://github.com/kavishsathia/hamster/actions/workflows/ci.yml"><img src="https://github.com/kavishsathia/hamster/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
@@ -55,22 +55,35 @@ cycle before probing the goal. `hamster signal goal-achieved` remains available
 as an optional immediate probe, but correctness does not depend on Codex
 remembering to call it.
 
-## Split screen
+## lazyloop
 
-A bare `hamster` opens a split screen in the current directory: a hamster on
-the left, Codex on the right. Put the binary on your `PATH` once and it works
-from any project:
+lazyloop is to loop engineering what lazygit is to git: the state on screen,
+the actions one key away, and nothing about the command surface to remember.
+`hamster` is the language and the kernel underneath; `lazyloop` is what you
+type.
 
 ```sh
-go install ./cmd/hamster
+go install ./cmd/lazyloop   # once
+lazyloop setup              # once — the hook goes into ~/.codex, for every project
 cd ~/some/project
-hamster
+lazyloop
 ```
 
-The agent is the stock CLI on a pseudo-terminal, so its rendering and any
-project hooks are exactly what they would be outside Hamster. Everything you
-type goes to the agent; leaving the agent leaves Hamster. `HAMSTER_AGENT`
-swaps the right pane for another command, for example `HAMSTER_AGENT=claude`.
+The right half of the screen is Codex, exactly as it is outside lazyloop: the
+stock CLI on a pseudo-terminal, its own rendering, its own hooks. The left
+half is the console. Everything you type goes to the agent until `ctrl-]`
+hands focus to the console:
+
+- `n` arms a loop. Type a command and it becomes "make this pass" under
+  default limits; a `.hmstr` path or a literal `goal { … }` compiles as
+  written. The loop starts with the agent's next message.
+- A waiting trap is answered with `a`, `r` (with a note), or an option number.
+- `k` twice kills the run. `q` returns to the agent.
+
+While a loop runs the console shows its state, iteration, limits counting
+down, and the last verifier result. `HAMSTER_AGENT` swaps the right pane for
+another command, for example `HAMSTER_AGENT=claude`. A bare `hamster` opens
+the same screen.
 
 ## Traps
 
