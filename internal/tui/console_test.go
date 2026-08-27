@@ -84,16 +84,18 @@ func testConsole(backend Backend) *console {
 	return newConsole(backend, "console", "/repo", Hooks{Installed: true}, func() {})
 }
 
-func TestPrefixKeyMovesFocusAndNothingElseLeaks(t *testing.T) {
+func TestPrefixFlipsToTheDashboardAndBack(t *testing.T) {
 	c := testConsole(&fakeBackend{})
+	// The agent owns the screen at first: keys pass straight through.
 	if got := string(c.route([]byte("hello"))); got != "hello" {
-		t.Fatalf("agent focus forwarded %q", got)
+		t.Fatalf("agent screen forwarded %q", got)
 	}
+	// The prefix flips to the dashboard and stops forwarding.
 	if got := string(c.route([]byte{prefixKey, 'n'})); got != "" {
-		t.Fatalf("console focus forwarded %q", got)
+		t.Fatalf("dashboard forwarded %q", got)
 	}
-	if c.focus != focusConsole || c.mode != modeLoop {
-		t.Fatalf("after prefix+n: focus %v mode %v", c.focus, c.mode)
+	if c.screen != screenDashboard || c.mode != modeLoop {
+		t.Fatalf("after prefix+n: screen %v mode %v", c.screen, c.mode)
 	}
 	// An arrow key inside the editor is swallowed, not typed.
 	c.route([]byte("\x1b[A"))
@@ -106,11 +108,39 @@ func TestPrefixKeyMovesFocusAndNothingElseLeaks(t *testing.T) {
 		t.Fatalf("escape did not cancel: mode %v line %q", c.mode, string(c.line))
 	}
 	c.route([]byte{0x1b}) // and again returns to the agent
-	if c.focus != focusAgent {
-		t.Fatal("second escape did not return focus")
+	if c.screen != screenAgent {
+		t.Fatal("second escape did not return to the agent")
 	}
 	if got := string(c.route([]byte("q"))); got != "q" {
-		t.Fatalf("q with agent focus was not forwarded: %q", got)
+		t.Fatalf("q on the agent screen was not forwarded: %q", got)
+	}
+	// Tab from the dashboard flips back to the agent.
+	c.route([]byte{prefixKey})
+	if c.screen != screenDashboard {
+		t.Fatal("prefix did not reach the dashboard")
+	}
+	c.route([]byte{'\t'})
+	if c.screen != screenAgent {
+		t.Fatal("tab did not flip to the agent")
+	}
+}
+
+func TestANewTrapRingsTheBell(t *testing.T) {
+	rung := 0
+	backend := &fakeBackend{}
+	c := testConsole(backend)
+	c.bell = func() { rung++ }
+	c.refresh() // no traps yet
+	backend.mu.Lock()
+	backend.view.Traps = []store.Trap{{ID: "t1", Kind: store.TrapApproval, Prompt: "ok?"}}
+	backend.mu.Unlock()
+	c.refresh()
+	if rung != 1 {
+		t.Fatalf("bell rang %d times, want 1", rung)
+	}
+	c.refresh() // same trap still open; no second ring
+	if rung != 1 {
+		t.Fatalf("bell rang again on an unchanged trap: %d", rung)
 	}
 }
 
@@ -124,7 +154,7 @@ func TestTypingACommandArmsTheShorthandGoal(t *testing.T) {
 		t.Fatalf("armed = %q", backend.armed)
 	}
 	c.refresh()
-	text := visible(c.render(computeLayout(30, 100), 0))
+	text := visible(c.render(fullLayout(30, 100), 0))
 	if !strings.Contains(text, "armed") || !strings.Contains(text, `"go test ./..."`) {
 		t.Fatalf("pane does not show the armed loop:\n%s", text)
 	}
@@ -151,7 +181,7 @@ func TestTrapsAreAnsweredByKey(t *testing.T) {
 		Traps: []store.Trap{{ID: "trap_1", Kind: store.TrapApproval, Prompt: "Do the names match?"}}}}
 	c := testConsole(backend)
 	c.refresh()
-	text := visible(c.render(computeLayout(30, 100), 0))
+	text := visible(c.render(fullLayout(30, 100), 0))
 	if !strings.Contains(text, "waiting on you") || !strings.Contains(text, "Do the names match?") {
 		t.Fatalf("pane does not show the trap:\n%s", text)
 	}
@@ -224,7 +254,7 @@ func TestLimitsReadAsRemaining(t *testing.T) {
 func TestHooksMissingIsTheFirstThingShown(t *testing.T) {
 	installed := false
 	c := newConsole(&fakeBackend{}, "console", "/repo", Hooks{Installed: false, Install: func() error { installed = true; return nil }}, func() {})
-	text := visible(c.render(computeLayout(30, 100), 0))
+	text := visible(c.render(fullLayout(30, 100), 0))
 	if !strings.Contains(text, "install the global hook") {
 		t.Fatalf("pane does not offer setup:\n%s", text)
 	}

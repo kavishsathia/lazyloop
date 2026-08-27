@@ -10,23 +10,12 @@ import (
 	"github.com/vito/midterm"
 )
 
-func TestLayoutSplitsAndSumsToWidth(t *testing.T) {
-	for _, cols := range []int{3, 20, 57, 80, 120, 200} {
-		lay := computeLayout(40, cols)
-		if lay.left+1+lay.right != cols {
-			t.Fatalf("cols=%d: left %d + divider + right %d != %d", cols, lay.left, lay.right, cols)
+func TestFullLayoutGivesTheWholeWidth(t *testing.T) {
+	for _, cols := range []int{1, 20, 80, 200} {
+		lay := fullLayout(40, cols)
+		if lay.left != cols || lay.cols != cols {
+			t.Fatalf("cols=%d: layout %+v is not full width", cols, lay)
 		}
-		if lay.right < 1 || lay.left < 0 {
-			t.Fatalf("cols=%d: degenerate layout %+v", cols, lay)
-		}
-	}
-	wide := computeLayout(40, 160)
-	if wide.left != 80 || wide.right != 79 {
-		t.Fatalf("wide layout = %+v, want an even split", wide)
-	}
-	narrow := computeLayout(40, 60)
-	if narrow.right < minRight {
-		t.Fatalf("narrow layout gives the agent %d columns, want at least %d", narrow.right, minRight)
 	}
 }
 
@@ -37,7 +26,7 @@ func visible(lines []string) string {
 }
 
 func TestPaneLinesAreExactlyPaneWide(t *testing.T) {
-	lay := computeLayout(24, 100)
+	lay := fullLayout(24, 100)
 	c := newConsole(nil, "console", "/tmp/some-project", Hooks{Installed: true}, func() {})
 	for quip := range quips {
 		lines := c.render(lay, quip)
@@ -51,8 +40,8 @@ func TestPaneLinesAreExactlyPaneWide(t *testing.T) {
 			}
 		}
 	}
-	if text := visible(c.render(lay, 0)); !strings.Contains(text, "some-project") || !strings.Contains(text, "ctrl-]") {
-		t.Fatalf("idle pane lacks the directory or the prefix hint:\n%s", text)
+	if text := visible(c.render(lay, 0)); !strings.Contains(text, "some-project") || !strings.Contains(text, "codex") {
+		t.Fatalf("idle pane lacks the directory or the flip hint:\n%s", text)
 	}
 }
 

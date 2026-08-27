@@ -51,7 +51,6 @@ func (c *console) render(lay layout, quip int) []string {
 		return nil
 	}
 	view := c.view
-	focused := c.focus == focusConsole
 
 	var body []string
 	body = append(body, c.masthead(width)...)
@@ -67,10 +66,10 @@ func (c *console) render(lay layout, quip int) []string {
 		body = append(body, c.trapPanel(width, view.Traps)...)
 	}
 
-	body = append(body, c.loopPanel(width, view, focused)...)
+	body = append(body, c.loopPanel(width, view)...)
 
 	if view != nil && view.Launch != nil {
-		body = append(body, panel(width, "armed", pick(focused, borderRun, borderIdle), []line{
+		body = append(body, panel(width, "armed", borderRun, []line{
 			{launchLabel(*view.Launch), styleBold},
 			{"starts with the agent's next message", styleDim},
 			{"x  disarm", styleKey},
@@ -91,11 +90,7 @@ func (c *console) masthead(width int) []string {
 		rows = append(rows, styledRow(center(art, width), width, styleArt))
 	}
 	rows = append(rows, blankRow(width))
-	if c.focus == focusConsole {
-		rows = append(rows, styledRow(center(" lazyloop ", width), width, styleFocus+styleBold))
-	} else {
-		rows = append(rows, styledRow(center("lazyloop", width), width, styleBold))
-	}
+	rows = append(rows, styledRow(center("lazyloop", width), width, styleKey+styleBold))
 	rows = append(rows, styledRow(center(filepath.Base(c.dir), width), width, styleDim))
 	rows = append(rows, blankRow(width))
 	return rows
@@ -120,21 +115,18 @@ func (c *console) trapPanel(width int, traps []store.Trap) []string {
 	return panel(width, "waiting on you", borderAlert, body)
 }
 
-func (c *console) loopPanel(width int, view *store.ConsoleObservation, focused bool) []string {
+func (c *console) loopPanel(width int, view *store.ConsoleObservation) []string {
 	switch {
 	case c.viewErr != nil:
 		return panel(width, "loop", borderBad, []line{{"daemon: " + firstLine(c.viewErr.Error()), styleBad}})
 	case view == nil || !view.Bound:
-		return panel(width, "loop", pick(focused, borderRun, borderIdle), []line{{"waiting for the agent's first hook", styleDim}})
+		return panel(width, "loop", borderIdle, []line{{"waiting for the agent's first hook", styleDim}})
 	case view.Run == nil:
-		return panel(width, "loop", pick(focused, borderRun, borderIdle), []line{{"no loop is governing this agent", styleDim}})
+		return panel(width, "loop", borderIdle, []line{{"no loop is governing this agent", styleDim}})
 	}
 
 	run := view.Run
 	textStyle, border := statusColour(run.Status)
-	if run.Status == "running" && !focused {
-		border = borderIdle
-	}
 
 	name := run.MachineName
 	if name == "" {
@@ -188,16 +180,12 @@ func (c *console) footer(width int, quip int) []string {
 	case modeNote:
 		return editorPanel(width, "why reject?", c.line, "the agent re-derives the work from your reason")
 	}
-	if c.focus == focusConsole {
-		return []string{
-			keyRow(width, []keyHint{{"n", "loop"}, {"k", "kill"}, {"q", "agent"}}),
-		}
-	}
 	rows := []string{}
 	for _, wrapped := range wrap(quips[quip], width-4) {
 		rows = append(rows, styledRow("  "+wrapped, width, styleItalic))
 	}
-	rows = append(rows, blankRow(width), styledRow(center("ctrl-]  console", width), width, styleDim))
+	rows = append(rows, blankRow(width))
+	rows = append(rows, keyRow(width, []keyHint{{"n", "loop"}, {"k", "kill"}, {"tab", "codex"}}))
 	return rows
 }
 
@@ -295,13 +283,6 @@ func statusColour(status string) (text, border string) {
 	default:
 		return styleBad, borderBad
 	}
-}
-
-func pick(cond bool, yes, no string) string {
-	if cond {
-		return yes
-	}
-	return no
 }
 
 func blankRow(width int) string {

@@ -20,11 +20,14 @@ import (
 
 const prefixKey = 0x1d // ctrl-]
 
-type focus int
+// screenMode is which full screen is showing. lazyloop and the agent each own
+// the whole terminal; a keystroke flips between them. The agent runs the
+// whole time, drawn only while it is the one on screen.
+type screenMode int
 
 const (
-	focusAgent focus = iota
-	focusConsole
+	screenAgent     screenMode = iota // Codex fills the screen
+	screenDashboard                   // the lazyloop console fills the screen
 )
 
 type mode int
@@ -50,14 +53,18 @@ type console struct {
 	hooks   Hooks
 	now     func() time.Time
 
-	focus   focus
-	mode    mode
-	line    []rune
-	message string
-	armKill bool
-	view    *store.ConsoleObservation
-	viewErr error
-	dirty   func()
+	screen    screenMode
+	mode      mode
+	line      []rune
+	message   string
+	armKill   bool
+	view      *store.ConsoleObservation
+	viewErr   error
+	lastTraps int
+	dirty     func()
+	// bell is rung when a trap newly opens, so an escalation reaches a person
+	// who is watching the agent instead of the dashboard. Optional.
+	bell func()
 }
 
 func newConsole(backend Backend, token, dir string, hooks Hooks, dirty func()) *console {
@@ -65,17 +72,18 @@ func newConsole(backend Backend, token, dir string, hooks Hooks, dirty func()) *
 }
 
 // route takes raw bytes from the person's terminal and returns the bytes the
-// agent should see. The prefix key toggles focus; with the console focused
-// nothing is forwarded.
+// agent should see. While the agent fills the screen every key reaches it
+// except the prefix, which flips to the dashboard; while the dashboard fills
+// the screen every key acts on it, and nothing is forwarded.
 func (c *console) route(input []byte) []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	forward := make([]byte, 0, len(input))
 	for index := 0; index < len(input); index++ {
 		b := input[index]
-		if c.focus == focusAgent {
+		if c.screen == screenAgent {
 			if b == prefixKey {
-				c.focus = focusConsole
+				c.screen = screenDashboard
 				c.dirty()
 				continue
 			}
@@ -112,7 +120,7 @@ func (c *console) escape() {
 		c.mode, c.line = modeKeys, nil
 		c.message = ""
 	} else {
-		c.focus = focusAgent
+		c.screen = screenAgent
 	}
 	c.armKill = false
 	c.dirty()
@@ -128,8 +136,10 @@ func (c *console) key(r rune) {
 		c.armKill = false
 	}
 	switch r {
-	case prefixKey, 'q':
-		c.focus = focusAgent
+	case 'q', '\t':
+		c.screen = screenAgent
+	case prefixKey:
+		// Already at the dashboard; ctrl-] always means "show me lazyloop".
 	case 'n':
 		c.mode, c.line, c.message = modeLoop, nil, ""
 	case 'x':
@@ -285,8 +295,17 @@ func (c *console) refresh() {
 	view, err := c.backend.Observe(ctx, c.token)
 	c.mu.Lock()
 	changed := err != nil || c.viewErr != nil || !sameView(c.view, view)
+	traps := 0
+	if view != nil {
+		traps = len(view.Traps)
+	}
+	escalated := traps > c.lastTraps
+	c.lastTraps = traps
 	c.view, c.viewErr = view, err
 	c.mu.Unlock()
+	if escalated && c.bell != nil {
+		c.bell()
+	}
 	if changed {
 		c.dirty()
 	}

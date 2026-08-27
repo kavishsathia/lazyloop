@@ -1,12 +1,9 @@
-// Package tui is the split screen behind a bare `lazyloop`: the console on
-// the left, the agent on the right, in the directory you ran it from.
-//
-// The agent is the stock CLI running on a pseudo-terminal. Its output is
-// decoded by an in-process terminal emulator and painted into the right pane,
-// so its own rendering — colours, alt screen, cursor — survives intact.
-// Everything typed goes straight to the agent until the prefix key hands
-// focus to the console; Hamster draws chrome and answers questions, nothing
-// more.
+// Package tui is the two full screens behind a bare `lazyloop`: the agent and
+// the dashboard, each owning the whole terminal, with a keystroke flipping
+// between them. The agent — the stock CLI on a pseudo-terminal — runs the
+// whole time; its output is decoded by an in-process terminal emulator so its
+// own rendering survives even while the dashboard is the one on screen. ctrl-]
+// shows the dashboard; Tab (or q) returns to the agent.
 package tui
 
 import (
@@ -39,18 +36,15 @@ const (
 	frameInterval = 33 * time.Millisecond
 	quipInterval  = 12 * time.Second
 	pollInterval  = 500 * time.Millisecond
-	divider       = "│"
-	minLeft       = 16
-	minRight      = 40
 )
 
-// Options configure a split-screen session.
+// Options configure a session.
 type Options struct {
 	// Dir is the working directory the agent starts in.
 	Dir string
-	// Agent is the command to run on the right, as argv. Defaults to codex.
+	// Agent is the command to run, as argv. Defaults to codex.
 	Agent []string
-	// Backend reaches the daemon. Nil leaves the console decorative.
+	// Backend reaches the daemon. Nil leaves the dashboard decorative.
 	Backend Backend
 	// Hooks says whether the agent's hooks reach the daemon, and how to fix that.
 	Hooks Hooks
@@ -58,35 +52,22 @@ type Options struct {
 	Token string
 }
 
+// layout is the terminal's size. There is no split any more; the dashboard
+// renders at the full width, and left is kept as that width so the pane code
+// reads the same.
 type layout struct {
-	rows, cols  int
-	left, right int
+	rows, cols int
+	left       int
 }
 
-func computeLayout(rows, cols int) layout {
+func fullLayout(rows, cols int) layout {
 	if rows < 1 {
 		rows = 1
 	}
-	if cols < 3 {
-		cols = 3
+	if cols < 1 {
+		cols = 1
 	}
-	left := cols / 2
-	right := cols - left - 1
-	if right < minRight {
-		right = min(minRight, cols-1-minLeft)
-		if right < 1 {
-			right = 1
-		}
-		left = cols - right - 1
-	}
-	if left < minLeft {
-		left = min(minLeft, cols-1-right)
-		if left < 0 {
-			left = 0
-		}
-		right = cols - left - 1
-	}
-	return layout{rows: rows, cols: cols, left: left, right: right}
+	return layout{rows: rows, cols: cols, left: cols}
 }
 
 // Run takes over the terminal until the agent exits.
@@ -106,7 +87,7 @@ func Run(ctx context.Context, options Options) error {
 	if err != nil {
 		return err
 	}
-	lay := computeLayout(rows, cols)
+	lay := fullLayout(rows, cols)
 	token := options.Token
 	if token == "" {
 		token = NewConsoleToken()
@@ -117,18 +98,16 @@ func Run(ctx context.Context, options Options) error {
 	command := exec.CommandContext(ctx, agent[0], agent[1:]...)
 	command.Dir = options.Dir
 	command.Env = append(os.Environ(), hook.ConsoleEnvironment+"="+token)
-	ptmx, err := pty.StartWithSize(command, &pty.Winsize{Rows: uint16(lay.rows), Cols: uint16(lay.right)})
+	// The agent owns the full terminal even while the dashboard is on screen,
+	// so a flip never resizes it and never makes it reflow.
+	ptmx, err := pty.StartWithSize(command, &pty.Winsize{Rows: uint16(lay.rows), Cols: uint16(lay.cols)})
 	if err != nil {
 		return fmt.Errorf("start %s: %w", agent[0], err)
 	}
 	defer ptmx.Close()
 
-	emulator := midterm.NewTerminal(lay.rows, lay.right)
-	// Answers to the agent's own queries (cursor position, device
-	// attributes) belong to the agent, not to the real terminal.
+	emulator := midterm.NewTerminal(lay.rows, lay.cols)
 	emulator.ForwardResponses = ptmx
-	// A few of the agent's requests are really for the terminal the person
-	// is sitting at: how to encode pastes and focus changes.
 	forwarder := &modeForwarder{w: os.Stdout, set: map[int]bool{}}
 	emulator.ForwardRequests = forwarder
 
@@ -147,9 +126,12 @@ func Run(ctx context.Context, options Options) error {
 	}()
 
 	var dirty atomic.Bool
+	var bell atomic.Bool
 	dirty.Store(true)
 	console := newConsole(options.Backend, token, options.Dir, options.Hooks, func() { dirty.Store(true) })
+	console.bell = func() { bell.Store(true); dirty.Store(true) }
 	quip := rand.Intn(len(quips))
+	lastScreen := screenMode(-1)
 
 	exited := make(chan struct{})
 	go func() {
@@ -162,7 +144,6 @@ func Run(ctx context.Context, options Options) error {
 				dirty.Store(true)
 			}
 			if err != nil {
-				// EIO is how a pty says the child has gone.
 				return
 			}
 		}
@@ -207,7 +188,6 @@ func Run(ctx context.Context, options Options) error {
 	defer frames.Stop()
 	quipTimer := time.NewTicker(quipInterval)
 	defer quipTimer.Stop()
-	// Limits count down whether or not anything else changes.
 	clock := time.NewTicker(time.Second)
 	defer clock.Stop()
 
@@ -223,9 +203,9 @@ func Run(ctx context.Context, options Options) error {
 			if err != nil {
 				continue
 			}
-			lay = computeLayout(rows, cols)
-			_ = pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(lay.rows), Cols: uint16(lay.right)})
-			emulator.Resize(lay.rows, lay.right)
+			lay = fullLayout(rows, cols)
+			_ = pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(lay.rows), Cols: uint16(lay.cols)})
+			emulator.Resize(lay.rows, lay.cols)
 			fmt.Fprint(out, "\x1b[2J")
 			dirty.Store(true)
 		case <-quipTimer.C:
@@ -234,11 +214,33 @@ func Run(ctx context.Context, options Options) error {
 		case <-clock.C:
 			dirty.Store(true)
 		case <-frames.C:
-			if dirty.Swap(false) {
-				draw(out, lay, emulator, console.render(lay, quip))
+			if bell.Swap(false) {
+				out.WriteString("\a")
+			}
+			if !dirty.Swap(false) {
+				out.Flush()
+				continue
+			}
+			screen := console.activeScreen()
+			// A flip clears first, so the screen it leaves cannot bleed through.
+			if screen != lastScreen {
+				fmt.Fprint(out, "\x1b[2J")
+				lastScreen = screen
+			}
+			if screen == screenAgent {
+				drawAgent(out, lay, emulator)
+			} else {
+				drawDashboard(out, lay, console.render(lay, quip))
 			}
 		}
 	}
+}
+
+// activeScreen reports which full screen is showing.
+func (c *console) activeScreen() screenMode {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.screen
 }
 
 func nextQuip(current int) int {
@@ -252,19 +254,27 @@ func nextQuip(current int) int {
 	return next
 }
 
-func draw(out *bufio.Writer, lay layout, emulator *midterm.Terminal, left []string) {
-	// Synchronized output: the terminal paints the frame at once.
+func drawAgent(out *bufio.Writer, lay layout, emulator *midterm.Terminal) {
+	fmt.Fprint(out, "\x1b[?2026h\x1b[?25l")
+	for row := 0; row < lay.rows; row++ {
+		fmt.Fprintf(out, "\x1b[%d;1H\x1b[K", row+1)
+		_ = emulator.RenderLine(out, row)
+		out.WriteString("\x1b[0m")
+	}
+	fmt.Fprint(out, "\x1b[?2026l")
+	out.Flush()
+}
+
+func drawDashboard(out *bufio.Writer, lay layout, rows []string) {
 	fmt.Fprint(out, "\x1b[?2026h\x1b[?25l")
 	for row := 0; row < lay.rows; row++ {
 		fmt.Fprintf(out, "\x1b[%d;1H", row+1)
-		if row < len(left) {
-			out.WriteString(left[row])
+		if row < len(rows) {
+			out.WriteString(rows[row])
 		} else {
-			out.WriteString(strings.Repeat(" ", lay.left))
+			out.WriteString(strings.Repeat(" ", lay.cols))
 		}
-		fmt.Fprintf(out, "\x1b[0m\x1b[2m%s\x1b[0m\x1b[K", divider)
-		_ = emulator.RenderLine(out, row)
-		out.WriteString("\x1b[0m")
+		out.WriteString("\x1b[0m\x1b[K")
 	}
 	fmt.Fprint(out, "\x1b[?2026l")
 	out.Flush()
@@ -273,7 +283,7 @@ func draw(out *bufio.Writer, lay layout, emulator *midterm.Terminal, left []stri
 // forwardedModes are the private modes an agent may set on the real terminal.
 // Both change how input is encoded and neither carries coordinates, so they
 // can pass through untouched; anything positional (mouse tracking) would need
-// its events translated into pane coordinates first, and is not forwarded.
+// its events translated first, and is not forwarded.
 var forwardedModes = map[int]bool{
 	1004: true, // focus reporting
 	2004: true, // bracketed paste

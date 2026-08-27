@@ -69,10 +69,12 @@ cd ~/some/project
 lazyloop
 ```
 
-The right half of the screen is Codex, exactly as it is outside lazyloop: the
-stock CLI on a pseudo-terminal, its own rendering, its own hooks. The left
-half is the console. Everything you type goes to the agent until `ctrl-]`
-hands focus to the console:
+lazyloop is two full screens with a key between them. You start in Codex,
+exactly as it is outside lazyloop — the stock CLI on a pseudo-terminal, its
+own rendering, its own hooks. `ctrl-]` flips to the full-screen dashboard;
+`Tab` flips back. Codex runs the whole time, drawn only while it is the
+screen you are on, so a trap rings the bell even while you are watching it.
+On the dashboard:
 
 - `n` arms a loop. Type a command and it becomes "make this pass" under
   default limits; a `.hmstr` path or a literal `goal { … }` compiles as
@@ -80,8 +82,9 @@ hands focus to the console:
 - A waiting trap is answered with `a`, `r` (with a note), or an option number.
 - `k` twice kills the run. `q` returns to the agent.
 
-While a loop runs the console shows its state, iteration, limits counting
-down, and the last verifier result. `HAMSTER_AGENT` swaps the right pane for
+While a loop runs the dashboard shows its state, iteration, limits counting
+down, and the last verifier result — green when it passes, red when it
+fails, amber while a trap waits on you. `HAMSTER_AGENT` swaps Codex for
 another command, for example `HAMSTER_AGENT=claude`. A bare `hamster` opens
 the same screen.
 

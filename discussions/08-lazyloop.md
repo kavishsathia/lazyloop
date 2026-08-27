@@ -20,7 +20,7 @@ language and the kernel; `lazyloop` is what people type.
 
 The agent keeps its own renderer. lazyloop runs the stock CLI on a
 pseudo-terminal, decodes its output with an in-process terminal emulator
-(`vito/midterm`), and paints it into the right half of the screen. The
+(`vito/midterm`), and paints it to the screen. The
 emulator answers the agent's own terminal queries; the two mode changes that
 are really about the person's terminal — bracketed paste and focus reporting
 — are forwarded and reset on exit. This is tmux's architecture at small
@@ -94,6 +94,21 @@ no run allows everything, which is what makes a user-level hook safe in every
 repository. The console notices when neither the user-level nor the project
 hooks route to a Hamster binary and offers `s` to install them. Any build of
 `hamster` or `lazyloop` counts as installed; both serve the same daemon.
+
+## Two full screens, not a split
+
+The agent and the dashboard each own the whole terminal; `ctrl-]` shows the
+dashboard, `Tab` returns to the agent. The agent is sized to the full
+terminal and keeps that size while the dashboard is up, so a flip never
+resizes it and never makes it reflow — the flip is instant, and the agent's
+screen survives it untouched in the emulator. This is the background model
+made concrete: the dashboard is home, the agent is one key away, and a trap
+rings the terminal bell so an escalation reaches a person who is watching
+the agent rather than the dashboard.
+
+It started as a left/right split. Two full screens read better: the agent
+gets the whole width it was built for, and the dashboard is a real
+dashboard rather than a sidebar.
 
 ## Not done here
 
