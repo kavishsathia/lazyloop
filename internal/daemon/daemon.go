@@ -43,15 +43,16 @@ func DefaultPaths(home string) Paths {
 }
 
 type Server struct {
-	store  *store.Store
-	locks  sync.Map
-	runner *hamsterruntime.Runner
+	store    *store.Store
+	locks    sync.Map
+	runner   *hamsterruntime.Runner
+	identity Identity
 }
 
 func New(state *store.Store) *Server {
 	runner := hamsterruntime.New(state)
 	runner.SetExecResolver(control.ResolveScriptMachine)
-	return &Server{store: state, runner: runner}
+	return &Server{store: state, runner: runner, identity: CurrentIdentity()}
 }
 
 func (s *Server) Serve(ctx context.Context, socketPath string) error {
@@ -177,7 +178,7 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 	var err error
 	switch request.Method {
 	case "ping":
-		result = map[string]any{"ok": true}
+		result = map[string]any{"ok": true, "identity": s.identity}
 	case "run.create":
 		var params CreateRunRequest
 		if err = json.Unmarshal(request.Params, &params); err == nil {
