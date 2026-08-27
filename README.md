@@ -1,12 +1,12 @@
 <div align="center">
-  <img src="assets/hamster-logo.png" alt="Hamster sprinting furiously in a wheel" width="220" />
+  <img src="assets/hamster-logo.png" alt="A hamster sprinting in a wheel" width="220" />
 
-  <h1>Hamster</h1>
+  <h1>lazyloop</h1>
 
-  <p>A small language and runtime for enforceable, resource-bounded Codex loops — and lazyloop, the screen you run them from.</p>
+  <p>A terminal dashboard for coding-agent loops you can trust — compose a loop, watch several run at once, answer only when they need you. Built on <b>Hamster</b>, a small language and runtime for enforceable, resource-bounded loops.</p>
 
   <p>
-    <a href="https://github.com/kavishsathia/hamster/actions/workflows/ci.yml"><img src="https://github.com/kavishsathia/hamster/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
+    <a href="https://github.com/kavishsathia/lazyloop/actions/workflows/ci.yml"><img src="https://github.com/kavishsathia/lazyloop/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
     <img src="https://img.shields.io/badge/status-experimental-C56A32?style=flat-square" alt="Status: experimental" />
     <img src="https://img.shields.io/badge/Go-1.25-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.25" />
     <img src="https://img.shields.io/badge/runtime-Codex-22272E?style=flat-square" alt="Runtime: Codex" />
