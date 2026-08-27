@@ -117,14 +117,10 @@ func TestFlippingAndPanelCycling(t *testing.T) {
 	if got := string(c.route([]byte{'n'})); got != "" {
 		t.Fatalf("dashboard forwarded %q", got)
 	}
-	if c.screen != screenDashboard || c.mode != modeLoop {
+	if c.screen != screenDashboard || c.mode != modeBuild {
 		t.Fatalf("after n: screen %v mode %v", c.screen, c.mode)
 	}
-	c.route([]byte("go test ./..."))
-	if string(c.line) != "go test ./..." {
-		t.Fatalf("line = %q", string(c.line))
-	}
-	c.route([]byte{0x1b}) // cancel editor
+	c.route([]byte{0x1b}) // cancel the builder
 	if c.mode != modeKeys {
 		t.Fatalf("escape did not cancel: %v", c.mode)
 	}
@@ -146,17 +142,28 @@ func TestFlippingAndPanelCycling(t *testing.T) {
 	}
 }
 
-func TestArmingStartsALoopAndListsIt(t *testing.T) {
+func TestComposingAndStartingALoop(t *testing.T) {
 	backend := &fakeBackend{}
 	c := testConsole(backend)
-	c.route([]byte{'n'})
-	c.route([]byte("go test ./...\r"))
+	c.route([]byte{'n'})               // open the builder
+	c.route([]byte{'l'})               // limit
+	c.route([]byte("5\r"))             // 5 minutes
+	c.route([]byte{'m'})               // machine check
+	c.route([]byte("go test ./...\r")) // command, commit clause
+	// The goal panel shows the live draft.
+	if text := visible(c.render(fullLayout(30, 120), 0)); !strings.Contains(text, "limit time 5m") || !strings.Contains(text, `bash.check("go test ./...")`) {
+		t.Fatalf("draft not shown live:\n%s", text)
+	}
+	c.route([]byte{'\r'}) // start
 	settle(t, c, func() bool { return strings.HasPrefix(c.message, "started") })
 	backend.mu.Lock()
 	armed := append([]string(nil), backend.armed...)
 	backend.mu.Unlock()
-	if len(armed) != 1 || !strings.Contains(armed[0], `bash.check("go test ./...")`) {
+	if len(armed) != 1 || !strings.Contains(armed[0], "limit time 5m") || !strings.Contains(armed[0], `bash.check("go test ./...")`) {
 		t.Fatalf("armed = %q", armed)
+	}
+	if c.mode != modeKeys {
+		t.Fatalf("builder did not close after start: %v", c.mode)
 	}
 	c.refresh()
 	if text := visible(c.render(fullLayout(30, 120), 0)); !strings.Contains(text, "go test ./...") {
@@ -164,16 +171,42 @@ func TestArmingStartsALoopAndListsIt(t *testing.T) {
 	}
 }
 
-func TestBadLoopIsReportedNotStarted(t *testing.T) {
+func TestBuilderRefusesToStartWithoutAGate(t *testing.T) {
+	c := testConsole(&fakeBackend{})
+	c.route([]byte{'n'})
+	c.route([]byte{'l'})
+	c.route([]byte("5\r")) // only a limit, no check
+	c.route([]byte{'\r'})  // try to start
+	if !strings.Contains(c.message, "add a check") || c.mode != modeBuild {
+		t.Fatalf("started without a gate: message %q mode %v", c.message, c.mode)
+	}
+	// Undo the limit, then a bad number is rejected.
+	c.route([]byte{0x7f})
+	c.route([]byte{'a'})
+	c.route([]byte("lots\r"))
+	if !strings.Contains(c.message, "positive number") {
+		t.Fatalf("bad attempts accepted: %q", c.message)
+	}
+}
+
+func TestJudgeAndTrapRecipesCompose(t *testing.T) {
 	backend := &fakeBackend{}
 	c := testConsole(backend)
 	c.route([]byte{'n'})
-	c.route([]byte("goal { verify x = nope; }\r"))
-	settle(t, c, func() bool { return strings.HasPrefix(c.message, "loop:") })
+	c.route([]byte{'j'})
+	c.route([]byte("reviewed for security\r"))
+	c.route([]byte{'t'})
+	c.route([]byte("Does it read well?\r"))
+	c.route([]byte{'\r'})
+	settle(t, c, func() bool { return strings.HasPrefix(c.message, "started") })
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
-	if len(backend.armed) != 0 {
-		t.Fatalf("a bad loop was armed: %q", backend.armed)
+	if len(backend.armed) != 1 {
+		t.Fatalf("not started: %q", backend.armed)
+	}
+	src := backend.armed[0]
+	if !strings.Contains(src, `judge "reviewed for security"`) || !strings.Contains(src, `trap "Does it read well?"`) {
+		t.Fatalf("recipes not composed:\n%s", src)
 	}
 }
 

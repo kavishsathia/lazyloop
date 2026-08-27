@@ -47,6 +47,20 @@ This is the pending-fork shape reused for a different reason. A fork cannot
 know its child's identity until the child's first hook; a console cannot know
 its agent's.
 
+## Composing a loop from recipes
+
+A loop is built, not written. `n` opens a composer: one-key recipes accrete
+clauses and the goal panel shows the `goal { … }` forming live. `l` adds a
+time limit, `a` an attempt limit, `m` a machine check (`verify … =
+bash.check("…")`), `j` a judge, `t` a trap. Each recipe opens a field for its
+argument; `⌫` pops the last clause; `⏎` compiles the draft and starts the loop.
+
+The recipes are an input method over the language, not a second semantics:
+each desugars to a real clause, and what the goal panel shows is the actual
+source that compiles and runs. The composer only guarantees the boring parts
+— naming each verify, ordering limits before gates, adding a return — and
+refuses to start a loop with no gate, because a goal without one is a vibe.
+
 ## Starting a loop without a script
 
 Most loops are "make this command pass". The console accepts that as one

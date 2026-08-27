@@ -27,10 +27,17 @@ const (
 type mode int
 
 const (
-	modeKeys mode = iota
-	modeLoop      // typing a loop to arm
-	modeNote      // typing the reasoning behind a rejection
+	modeKeys  mode = iota
+	modeBuild      // composing a loop from recipes
+	modeNote       // typing the reasoning behind a rejection
 )
+
+// A clause is one recipe the person added while composing a loop. The kind is
+// the recipe letter; arg is what they typed for it.
+type clause struct {
+	kind byte
+	arg  string
+}
 
 // panelFocus is which of the three dashboard panels the keys act on.
 type panelFocus int
@@ -60,6 +67,9 @@ type console struct {
 	line    []rune
 	message string
 	armKill bool
+
+	draft  []clause
+	recipe byte // the recipe awaiting its argument, or 0 in the menu
 
 	panel           panelFocus
 	loops           []store.LoopSummary
@@ -105,7 +115,7 @@ func (c *console) route(input []byte) []byte {
 			continue
 		}
 		if b == 0x1b {
-			if index+2 < len(input) && input[index+1] == '[' {
+			if c.mode == modeKeys && index+2 < len(input) && input[index+1] == '[' {
 				switch input[index+2] {
 				case 'A':
 					c.nav(-1)
@@ -147,10 +157,13 @@ func (c *console) route(input []byte) []byte {
 }
 
 func (c *console) escape() {
-	if c.mode != modeKeys {
-		c.mode, c.line = modeKeys, nil
+	switch {
+	case c.mode == modeBuild && c.recipe != 0:
+		c.recipe, c.line = 0, nil // cancel the field, stay in the builder
+	case c.mode != modeKeys:
+		c.mode, c.line, c.recipe, c.draft = modeKeys, nil, 0, nil
 		c.message = ""
-	} else {
+	default:
 		c.screen = screenAgent
 	}
 	c.armKill = false
@@ -159,6 +172,10 @@ func (c *console) escape() {
 
 func (c *console) key(r rune) {
 	defer c.dirty()
+	if c.mode == modeBuild {
+		c.build(r)
+		return
+	}
 	if c.mode != modeKeys {
 		c.edit(r)
 		return
@@ -178,7 +195,7 @@ func (c *console) key(r rune) {
 	case 'k':
 		c.nav(-1)
 	case 'n':
-		c.mode, c.line, c.message = modeLoop, nil, ""
+		c.mode, c.line, c.recipe, c.draft, c.message = modeBuild, nil, 0, nil, ""
 	case 'a':
 		c.answer(store.TrapApprove, "")
 	case 'r':
@@ -208,18 +225,12 @@ func (c *console) edit(r rune) {
 	switch r {
 	case '\r', '\n':
 		text := strings.TrimSpace(string(c.line))
-		submitted := c.mode
 		c.mode, c.line = modeKeys, nil
-		switch submitted {
-		case modeLoop:
-			c.arm(text)
-		case modeNote:
-			if text == "" {
-				c.message = "a rejection needs a reason; the agent re-derives the work from it"
-				return
-			}
-			c.answer(store.TrapReject, text)
+		if text == "" {
+			c.message = "a rejection needs a reason; the agent re-derives the work from it"
+			return
 		}
+		c.answer(store.TrapReject, text)
 	case 0x7f, 0x08:
 		if len(c.line) > 0 {
 			c.line = c.line[:len(c.line)-1]
@@ -233,10 +244,63 @@ func (c *console) edit(r rune) {
 	}
 }
 
-// arm compiles what the person typed and hands it to the runtime, which
-// spawns a fresh Codex for it. A loop is one agent's whole job.
-func (c *console) arm(text string) {
-	machine, source, err := CompileRequest(text)
+// build handles a keystroke while composing a loop. In the menu a recipe
+// letter opens a field; while a field is open every printable key is its
+// argument, Enter commits the clause, and Escape cancels just the field.
+func (c *console) build(r rune) {
+	if c.recipe != 0 {
+		switch r {
+		case '\r', '\n':
+			c.commitClause()
+		case 0x7f, 0x08:
+			if len(c.line) > 0 {
+				c.line = c.line[:len(c.line)-1]
+			}
+		case 0x15:
+			c.line = nil
+		default:
+			if r >= 0x20 && r < 0x7f {
+				c.line = append(c.line, r)
+			}
+		}
+		return
+	}
+	switch r {
+	case 'l', 'a', 'm', 'j', 't':
+		c.recipe, c.line, c.message = byte(r), nil, ""
+	case '\r', '\n':
+		c.startDraft()
+	case 0x7f, 0x08: // undo the last clause
+		if len(c.draft) > 0 {
+			c.draft = c.draft[:len(c.draft)-1]
+		}
+	}
+}
+
+// commitClause validates a field and appends it to the draft.
+func (c *console) commitClause() {
+	arg := strings.TrimSpace(string(c.line))
+	if c.recipe == 'l' || c.recipe == 'a' {
+		if n, err := strconv.Atoi(arg); err != nil || n <= 0 {
+			c.message = "type a positive number"
+			return
+		}
+	} else if arg == "" {
+		c.message = "type something for this check"
+		return
+	}
+	c.draft = append(c.draft, clause{kind: c.recipe, arg: arg})
+	c.recipe, c.line, c.message = 0, nil, ""
+}
+
+// startDraft compiles the composed loop and hands it to the runtime.
+func (c *console) startDraft() {
+	if !c.draftHasGate() {
+		c.message = "add a check (m, j, or t) before starting"
+		return
+	}
+	source := c.draftScript()
+	machine, _, err := CompileRequest(source)
 	if err != nil {
 		c.message = "loop: " + firstLine(err.Error())
 		return
@@ -245,8 +309,90 @@ func (c *console) arm(text string) {
 		c.message = "cannot start a loop in this mode"
 		return
 	}
+	label := c.draftLabel()
+	c.mode, c.line, c.recipe, c.draft = modeKeys, nil, 0, nil
 	c.message = "starting a Codex for this loop…"
-	go c.startLoop(machine, source, strings.TrimSpace(text))
+	go c.startLoop(machine, source, label)
+}
+
+func (c *console) draftHasGate() bool {
+	for _, cl := range c.draft {
+		if cl.kind == 'm' || cl.kind == 'j' || cl.kind == 't' {
+			return true
+		}
+	}
+	return false
+}
+
+// draftScript renders the composed clauses as a goal. Limits come first, then
+// the gates, then a return of the first machine check (or true).
+func (c *console) draftScript() string {
+	var limits, gates []string
+	firstVerify, verifyN := "", 0
+	for _, cl := range c.draft {
+		switch cl.kind {
+		case 'l':
+			limits = append(limits, fmt.Sprintf("  limit time %sm;", cl.arg))
+		case 'a':
+			limits = append(limits, fmt.Sprintf("  limit attempts %s;", cl.arg))
+		case 'm':
+			verifyN++
+			name := fmt.Sprintf("check%d", verifyN)
+			if firstVerify == "" {
+				firstVerify = name
+			}
+			gates = append(gates, fmt.Sprintf("  verify %s = bash.check(%s);", name, quote(cl.arg)))
+		case 'j':
+			gates = append(gates, fmt.Sprintf("  judge %s;", quote(cl.arg)))
+		case 't':
+			gates = append(gates, fmt.Sprintf("  trap %s;", quote(cl.arg)))
+		}
+	}
+	ret := firstVerify
+	if ret == "" {
+		ret = "true"
+	}
+	var b strings.Builder
+	b.WriteString("goal {\n")
+	for _, l := range limits {
+		b.WriteString(l + "\n")
+	}
+	for _, l := range gates {
+		b.WriteString(l + "\n")
+	}
+	b.WriteString("  return " + ret + ";\n}\n")
+	return b.String()
+}
+
+func (c *console) draftLabel() string {
+	for _, cl := range c.draft {
+		if cl.kind == 'm' {
+			return cl.arg
+		}
+	}
+	for _, cl := range c.draft {
+		if cl.kind == 'j' || cl.kind == 't' {
+			return cl.arg
+		}
+	}
+	return "loop"
+}
+
+// recipePrompt is what the field asks for, and how the legend reads.
+func recipePrompt(recipe byte) string {
+	switch recipe {
+	case 'l':
+		return "minutes"
+	case 'a':
+		return "attempts"
+	case 'm':
+		return "shell command to pass"
+	case 'j':
+		return "what should the reviewer check"
+	case 't':
+		return "question for the human"
+	}
+	return ""
 }
 
 func (c *console) requestQuit() {

@@ -121,6 +121,16 @@ func (c *console) renderList(width, height int) []string {
 
 func (c *console) renderSource(width, height int) []string {
 	border := borderFor(c.panel == focusSource)
+	if c.mode == modeBuild {
+		var body []line
+		for _, raw := range strings.Split(strings.TrimRight(c.draftScript(), "\n"), "\n") {
+			body = append(body, line{raw, ""})
+		}
+		if len(c.draft) == 0 {
+			body = append(body, line{"", ""}, line{"add checks with the keys below", styleDim})
+		}
+		return scrollPanel(width, height, "building", borderRun, body, 0)
+	}
 	if c.detail == nil || strings.TrimSpace(c.detail.Source) == "" {
 		return scrollPanel(width, height, "goal", border, []line{{"no source recorded for this loop", styleDim}}, 0)
 	}
@@ -162,8 +172,8 @@ func (c *console) renderLogs(width, height int) []string {
 // message or the keys.
 func (c *console) barRow(width int) string {
 	switch c.mode {
-	case modeLoop:
-		return editorBar(width, "new loop", c.line)
+	case modeBuild:
+		return c.buildBar(width)
 	case modeNote:
 		return editorBar(width, "why reject?", c.line)
 	}
@@ -182,6 +192,19 @@ func (c *console) barRow(width int) string {
 	}
 	hints := "n new · d stop · ↑↓ move · tab panel · ctrl-] codex · q quit"
 	return fit("  "+hints, width, styleDim)
+}
+
+// buildBar shows the recipe legend while composing, or the current field's
+// prompt while a recipe is waiting for its argument.
+func (c *console) buildBar(width int) string {
+	if c.recipe != 0 {
+		return editorBar(width, recipePrompt(c.recipe), c.line)
+	}
+	legend := "l imit · a ttempts · m achine · j udge · t rap · ⏎ start · ⌫ undo · esc cancel"
+	if c.message != "" {
+		legend = firstLine(c.message) + "   " + legend
+	}
+	return fit("  "+legend, width, styleKey)
 }
 
 func editorBar(width int, label string, text []rune) string {

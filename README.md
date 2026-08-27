@@ -85,10 +85,12 @@ output, the traps. Both right panels scroll.
 
 - `↑ ↓` move within the focused panel — selecting a loop, or scrolling its
   source or log. `Tab` moves focus between the three panels.
-- `n` arms a loop. Type a command and it becomes "make this pass" under
-  default limits; a `.hmstr` path or a literal `goal { … }` compiles as
-  written. Arming it hands Codex its opening task, so the loop starts working
-  on its own — you stay on the dashboard and watch it go.
+- `n` opens the loop builder. You compose a loop from one-key recipes and
+  the goal panel shows the script forming live: `l` a time limit (minutes),
+  `a` an attempt limit, `m` a machine check (a shell command that must pass),
+  `j` a judge (an agent reviews for what you describe), `t` a trap (a question
+  for you). `⌫` undoes the last recipe; `⏎` starts the loop — which spawns its
+  Codex and hands it the task. It won't start without at least one check.
 - A waiting trap is answered with `a`, `r` (with a note), or an option
   number; the bottom bar shows the question.
 - `d` twice stops the selected loop — killing its Codex and its run.
