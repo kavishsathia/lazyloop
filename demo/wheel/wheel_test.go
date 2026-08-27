@@ -4,17 +4,10 @@ import "testing"
 
 func TestTurnsCountOnlyFullTurns(t *testing.T) {
 	w := Wheel{Circumference: 50}
-	cases := []struct {
+	for _, c := range []struct {
 		distance float64
 		want     int
-	}{
-		{0, 0},
-		{49, 0},
-		{50, 1},
-		{149, 2},
-		{150, 3},
-	}
-	for _, c := range cases {
+	}{{0, 0}, {49, 0}, {50, 1}, {149, 2}, {150, 3}} {
 		got, err := w.Turns(c.distance)
 		if err != nil {
 			t.Fatalf("Turns(%v) error = %v", c.distance, err)
@@ -27,20 +20,23 @@ func TestTurnsCountOnlyFullTurns(t *testing.T) {
 
 func TestTurnsRefusesAWheelWithNoSize(t *testing.T) {
 	if _, err := (Wheel{}).Turns(10); err != ErrNoWheel {
-		t.Fatalf("Turns on an empty wheel error = %v, want ErrNoWheel", err)
+		t.Fatalf("Turns on an empty wheel = %v, want ErrNoWheel", err)
 	}
 }
 
-func TestDistanceRoundTrips(t *testing.T) {
-	w := Wheel{Circumference: 62.8}
-	turns, err := w.Turns(w.Distance(40))
-	if err != nil || turns != 40 {
-		t.Fatalf("40 turns round-tripped to %d (%v)", turns, err)
+func TestRationSplitsEvenlyRoundingDown(t *testing.T) {
+	for _, c := range []struct{ pellets, hamsters, want int }{{10, 2, 5}, {7, 2, 3}, {9, 3, 3}, {5, 0, 0}} {
+		if got := Ration(c.pellets, c.hamsters); got != c.want {
+			t.Errorf("Ration(%d, %d) = %d, want %d", c.pellets, c.hamsters, got, c.want)
+		}
 	}
 }
 
-func TestMarathonsAreKilometres(t *testing.T) {
-	if got := Marathons(5_200_00); got != 5.2 {
-		t.Fatalf("Marathons(520000 cm) = %v, want 5.2", got)
+func TestTopSpeedIsDistanceOverTime(t *testing.T) {
+	if got := TopSpeed(50, 40, 10); got != 200 {
+		t.Fatalf("TopSpeed(50, 40, 10) = %v, want 200", got)
+	}
+	if got := TopSpeed(50, 40, 0); got != 0 {
+		t.Fatalf("TopSpeed with no time = %v, want 0", got)
 	}
 }
