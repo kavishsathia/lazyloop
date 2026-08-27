@@ -1,9 +1,7 @@
-// Package tui is the two full screens behind a bare `lazyloop`: the agent and
-// the dashboard, each owning the whole terminal, with a keystroke flipping
-// between them. The agent — the stock CLI on a pseudo-terminal — runs the
-// whole time; its output is decoded by an in-process terminal emulator so its
-// own rendering survives even while the dashboard is the one on screen. ctrl-]
-// shows the dashboard; Tab (or q) returns to the agent.
+// Package tui is the screen behind a bare `lazyloop`: a dashboard listing every
+// loop, and — one keypress away — the Codex running whichever loop you have
+// selected. Each loop gets its own Codex process with a fresh session; several
+// run at once, and the dashboard is how you watch and steer them.
 package tui
 
 import (
@@ -25,11 +23,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/creack/pty"
 	"github.com/vito/midterm"
 	"golang.org/x/term"
 
-	"hamster/internal/hook"
+	"hamster/internal/ir"
 )
 
 const (
@@ -40,21 +37,13 @@ const (
 
 // Options configure a session.
 type Options struct {
-	// Dir is the working directory the agent starts in.
-	Dir string
-	// Agent is the command to run, as argv. Defaults to codex.
-	Agent []string
-	// Backend reaches the daemon. Nil leaves the dashboard decorative.
-	Backend Backend
-	// Hooks says whether the agent's hooks reach the daemon, and how to fix that.
-	Hooks Hooks
-	// Token identifies this screen to hooks. Generated when empty.
-	Token string
+	Dir     string   // working directory the agents start in
+	Agent   []string // command to run per loop, as argv; defaults to codex
+	Backend Backend  // reaches the daemon; nil leaves the dashboard decorative
+	Hooks   Hooks
 }
 
-// layout is the terminal's size. There is no split any more; the dashboard
-// renders at the full width, and left is kept as that width so the pane code
-// reads the same.
+// layout is the terminal's size. The dashboard renders at the full width.
 type layout struct {
 	rows, cols int
 	left       int
@@ -70,14 +59,14 @@ func fullLayout(rows, cols int) layout {
 	return layout{rows: rows, cols: cols, left: cols}
 }
 
-// Run takes over the terminal until the agent exits.
+// Run takes over the terminal until the person quits.
 func Run(ctx context.Context, options Options) error {
-	agent := options.Agent
-	if len(agent) == 0 {
-		agent = []string{"codex"}
+	argv := options.Agent
+	if len(argv) == 0 {
+		argv = []string{"codex"}
 	}
-	if _, err := exec.LookPath(agent[0]); err != nil {
-		return fmt.Errorf("%s is not on PATH", agent[0])
+	if _, err := exec.LookPath(argv[0]); err != nil {
+		return fmt.Errorf("%s is not on PATH", argv[0])
 	}
 	stdin := int(os.Stdin.Fd())
 	if !term.IsTerminal(stdin) {
@@ -88,28 +77,9 @@ func Run(ctx context.Context, options Options) error {
 		return err
 	}
 	lay := fullLayout(rows, cols)
-	token := options.Token
-	if token == "" {
-		token = NewConsoleToken()
-	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	command := exec.CommandContext(ctx, agent[0], agent[1:]...)
-	command.Dir = options.Dir
-	command.Env = append(os.Environ(), hook.ConsoleEnvironment+"="+token)
-	// The agent owns the full terminal even while the dashboard is on screen,
-	// so a flip never resizes it and never makes it reflow.
-	ptmx, err := pty.StartWithSize(command, &pty.Winsize{Rows: uint16(lay.rows), Cols: uint16(lay.cols)})
-	if err != nil {
-		return fmt.Errorf("start %s: %w", agent[0], err)
-	}
-	defer ptmx.Close()
-
-	emulator := midterm.NewTerminal(lay.rows, lay.cols)
-	emulator.ForwardResponses = ptmx
-	forwarder := &modeForwarder{w: os.Stdout, set: map[int]bool{}}
-	emulator.ForwardRequests = forwarder
 
 	previous, err := term.MakeRaw(stdin)
 	if err != nil {
@@ -120,56 +90,57 @@ func Run(ctx context.Context, options Options) error {
 	out := bufio.NewWriterSize(os.Stdout, 1<<16)
 	fmt.Fprint(out, "\x1b[?1049h\x1b[?25l\x1b[2J")
 	out.Flush()
-	defer func() {
-		forwarder.reset()
-		fmt.Fprint(os.Stdout, "\x1b[0m\x1b[?25h\x1b[?1049l")
-	}()
-
-	// Writes to the agent come from two places — the person's keystrokes and a
-	// loop's opening prompt — so they are serialised through one path.
-	var agentMu sync.Mutex
-	writeAgent := func(b []byte) error {
-		agentMu.Lock()
-		defer agentMu.Unlock()
-		_, err := ptmx.Write(b)
-		return err
-	}
+	defer fmt.Fprint(os.Stdout, "\x1b[0m\x1b[?25h\x1b[?1049l")
 
 	var dirty atomic.Bool
 	var bell atomic.Bool
 	dirty.Store(true)
-	console := newConsole(options.Backend, token, options.Dir, options.Hooks, func() { dirty.Store(true) })
-	console.bell = func() { bell.Store(true); dirty.Store(true) }
-	console.sendAgent = func(b []byte) { _ = writeAgent(b) }
+	markDirty := func() { dirty.Store(true) }
+
+	fleet := newFleet(ctx, argv, options.Dir, os.Stdout, lay.rows, lay.cols, markDirty)
+	defer fleet.killAll()
+
 	quit := make(chan struct{})
 	var quitOnce sync.Once
+	console := newConsole(options.Backend, options.Dir, options.Hooks, markDirty)
 	console.quit = func() { quitOnce.Do(func() { close(quit) }) }
-	quip := rand.Intn(len(quips))
-	lastScreen := screenMode(-1)
-
-	exited := make(chan struct{})
-	go func() {
-		defer close(exited)
-		buffer := make([]byte, 32*1024)
-		for {
-			n, err := ptmx.Read(buffer)
-			if n > 0 {
-				_, _ = emulator.Write(buffer[:n])
-				dirty.Store(true)
-			}
-			if err != nil {
-				return
-			}
+	console.bell = func() { bell.Store(true); dirty.Store(true) }
+	console.killAgent = fleet.kill
+	console.startLoop = func(machine ir.Machine, source, label string) {
+		if options.Backend == nil {
+			console.setMessage("no daemon; cannot start a loop")
+			return
 		}
-	}()
+		token := NewConsoleToken()
+		agent, err := fleet.spawn(token)
+		if err != nil {
+			console.setMessage(firstLine(err.Error()))
+			return
+		}
+		armCtx, armCancel := context.WithTimeout(ctx, 5*time.Second)
+		loop, err := options.Backend.Arm(armCtx, token, options.Dir, machine, source, label)
+		armCancel()
+		if err != nil {
+			if agent.cmd.Process != nil {
+				_ = agent.cmd.Process.Kill()
+			}
+			console.setMessage(firstLine(err.Error()))
+			return
+		}
+		fleet.bind(token, loop.ID)
+		console.selectLoop(loop.ID)
+		console.setMessage("started: " + label)
+		go injectWhenReady(ctx, agent, agentPrompt(label, source))
+	}
+
 	go func() {
 		buffer := make([]byte, 4096)
 		for {
 			n, err := os.Stdin.Read(buffer)
 			if n > 0 {
 				if forward := console.route(buffer[:n]); len(forward) > 0 {
-					if err := writeAgent(forward); err != nil {
-						return
+					if agent := fleet.get(console.selected()); agent != nil {
+						_ = agent.write(forward)
 					}
 				}
 			}
@@ -205,16 +176,15 @@ func Run(ctx context.Context, options Options) error {
 	clock := time.NewTicker(time.Second)
 	defer clock.Stop()
 
+	quip := rand.Intn(len(quips))
+	lastScreen := screenMode(-1)
+	lastAgent := ""
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-quit:
-			// Ctrl-C or q on the dashboard: the deferred cancel kills the
-			// agent, and the deferred restore hands the terminal back.
-			return nil
-		case <-exited:
-			_ = command.Wait()
 			return nil
 		case <-winch:
 			cols, rows, err := term.GetSize(stdin)
@@ -222,8 +192,7 @@ func Run(ctx context.Context, options Options) error {
 				continue
 			}
 			lay = fullLayout(rows, cols)
-			_ = pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(lay.rows), Cols: uint16(lay.cols)})
-			emulator.Resize(lay.rows, lay.cols)
+			fleet.resize(lay.rows, lay.cols)
 			fmt.Fprint(out, "\x1b[2J")
 			dirty.Store(true)
 		case <-quipTimer.C:
@@ -240,25 +209,53 @@ func Run(ctx context.Context, options Options) error {
 				continue
 			}
 			screen := console.activeScreen()
-			// A flip clears first, so the screen it leaves cannot bleed through.
-			if screen != lastScreen {
-				fmt.Fprint(out, "\x1b[2J")
-				lastScreen = screen
-			}
 			if screen == screenAgent {
-				drawAgent(out, lay, emulator)
+				selected := console.selected()
+				fleet.setActive(selected)
+				agent := fleet.get(selected)
+				if screen != lastScreen || selected != lastAgent {
+					fmt.Fprint(out, "\x1b[2J")
+				}
+				lastScreen, lastAgent = screen, selected
+				if agent != nil {
+					drawAgent(out, lay, agent.emu)
+				} else {
+					drawPlaceholder(out, lay)
+				}
 			} else {
+				fleet.setActive("")
+				if screen != lastScreen {
+					fmt.Fprint(out, "\x1b[2J")
+				}
+				lastScreen, lastAgent = screen, ""
 				drawDashboard(out, lay, console.render(lay, quip))
 			}
 		}
 	}
 }
 
-// activeScreen reports which full screen is showing.
-func (c *console) activeScreen() screenMode {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.screen
+// injectWhenReady hands a freshly spawned Codex its opening task once it has
+// printed something (its composer is up) — or after a short wait if it is
+// quiet — then submits with a carriage return.
+func injectWhenReady(ctx context.Context, agent *agent, prompt string) {
+	select {
+	case <-agent.first:
+	case <-time.After(3 * time.Second):
+	case <-ctx.Done():
+		return
+	}
+	select {
+	case <-time.After(400 * time.Millisecond):
+	case <-ctx.Done():
+		return
+	}
+	_ = agent.write([]byte(prompt))
+	select {
+	case <-time.After(150 * time.Millisecond):
+	case <-ctx.Done():
+		return
+	}
+	_ = agent.write([]byte("\r"))
 }
 
 func nextQuip(current int) int {
@@ -298,10 +295,17 @@ func drawDashboard(out *bufio.Writer, lay layout, rows []string) {
 	out.Flush()
 }
 
+func drawPlaceholder(out *bufio.Writer, lay layout) {
+	fmt.Fprint(out, "\x1b[?2026h\x1b[?25l\x1b[2J")
+	message := "this loop has no running agent"
+	hint := "ctrl-]  back to the dashboard"
+	fmt.Fprintf(out, "\x1b[%d;1H%s", lay.rows/2, fit(center(message, lay.cols), lay.cols, styleDim))
+	fmt.Fprintf(out, "\x1b[%d;1H%s", lay.rows/2+2, fit(center(hint, lay.cols), lay.cols, styleDim))
+	fmt.Fprint(out, "\x1b[?2026l")
+	out.Flush()
+}
+
 // forwardedModes are the private modes an agent may set on the real terminal.
-// Both change how input is encoded and neither carries coordinates, so they
-// can pass through untouched; anything positional (mouse tracking) would need
-// its events translated first, and is not forwarded.
 var forwardedModes = map[int]bool{
 	1004: true, // focus reporting
 	2004: true, // bracketed paste
@@ -309,13 +313,16 @@ var forwardedModes = map[int]bool{
 
 var modeSequence = regexp.MustCompile(`\x1b\[\??(\d+)([hl])`)
 
-// modeForwarder passes an allowlist of mode changes from the emulator to the
-// real terminal, normalising them to private-mode form, and remembers what it
-// turned on so it can turn it off again when the session ends.
+// modeForwarder passes an allowlist of terminal-mode changes from one agent's
+// emulator to the real terminal — but only while that agent is the one on
+// screen, so a background agent's modes do not leak. It remembers what it set
+// so it can turn those modes off when another agent takes the screen and back
+// on when it returns.
 type modeForwarder struct {
-	w   io.Writer
-	mu  sync.Mutex
-	set map[int]bool
+	w      io.Writer
+	mu     sync.Mutex
+	set    map[int]bool
+	active func() bool
 }
 
 func (f *modeForwarder) Write(p []byte) (int, error) {
@@ -328,17 +335,31 @@ func (f *modeForwarder) Write(p []byte) (int, error) {
 		f.mu.Lock()
 		f.set[mode] = on
 		f.mu.Unlock()
-		fmt.Fprintf(f.w, "\x1b[?%d%s", mode, match[2])
+		if f.active == nil || f.active() {
+			fmt.Fprintf(f.w, "\x1b[?%d%s", mode, match[2])
+		}
 	}
 	return len(p), nil
 }
 
+// reset turns off the modes this agent had enabled, when it leaves the screen.
 func (f *modeForwarder) reset() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for mode, on := range f.set {
 		if on {
 			fmt.Fprintf(f.w, "\x1b[?%dl", mode)
+		}
+	}
+}
+
+// reapply turns this agent's modes back on, when it takes the screen.
+func (f *modeForwarder) reapply() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for mode, on := range f.set {
+		if on {
+			fmt.Fprintf(f.w, "\x1b[?%dh", mode)
 		}
 	}
 }

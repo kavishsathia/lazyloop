@@ -69,11 +69,11 @@ cd ~/some/project
 lazyloop
 ```
 
-lazyloop is two full screens with a key between them. You land on the
-dashboard; `ctrl-]` flips to Codex — the stock CLI on a pseudo-terminal, its
-own rendering, its own hooks — and `ctrl-]` flips back. Codex runs the whole
-time, drawn only while it is the screen you are on, so a trap rings the bell
-even while you are watching it.
+Each loop gets its own Codex — a fresh process, a fresh session, its own
+context — and several run at once. You land on the dashboard; `ctrl-]` flips
+to the Codex running whichever loop you have selected, and `ctrl-]` flips
+back. Every agent runs the whole time, drawn only while its loop is the one
+on screen, so a trap in any loop rings the bell even while you watch another.
 
 The dashboard is three panels, lazygit style. On the left, the list of loops
 — every loop you have ever run in this directory, persisted across sessions,
@@ -91,7 +91,7 @@ output, the traps. Both right panels scroll.
   on its own — you stay on the dashboard and watch it go.
 - A waiting trap is answered with `a`, `r` (with a note), or an option
   number; the bottom bar shows the question.
-- `d` twice stops the running loop; `x` disarms an armed one.
+- `d` twice stops the selected loop — killing its Codex and its run.
 - `Ctrl-C` or `q` quits lazyloop, stopping Codex with it.
 
 `HAMSTER_AGENT` swaps Codex for another command, for example

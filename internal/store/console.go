@@ -110,6 +110,35 @@ func (s *Store) DisarmLoop(ctx context.Context, console string) error {
 	return err
 }
 
+// StopLoop ends one loop by id. An armed loop nobody claimed is removed; a
+// running loop's run is marked killed and its process unbound, so the session
+// that ran it is cleanly released rather than left pointing at a dead run.
+// Each loop has its own session, so stopping one never disturbs another.
+func (s *Store) StopLoop(ctx context.Context, loopID string) error {
+	loop, err := s.GetLoop(ctx, loopID)
+	if err != nil {
+		return err
+	}
+	if loop.RunID == "" {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM loops WHERE id=? AND run_id IS NULL`, loopID)
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := formatTime(time.Now().UTC())
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET status='killed', termination_reason='stopped from lazyloop', updated_at=?
+WHERE id=? AND status IN ('running','waiting','trapped')`, now, loop.RunID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE processes SET current_run_id=NULL, updated_at=? WHERE current_run_id=?`, now, loop.RunID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) GetLoop(ctx context.Context, id string) (*Loop, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+loopColumns+` FROM loops WHERE id=?`, id)
 	return scanLoop(row)

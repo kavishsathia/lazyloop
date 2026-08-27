@@ -113,11 +113,26 @@ repository. The console notices when neither the user-level nor the project
 hooks route to a Hamster binary and offers `s` to install them. Any build of
 `hamster` or `lazyloop` counts as installed; both serve the same daemon.
 
-## Two full screens, not a split
+## One Codex per loop, running at once
+
+Each loop gets its own Codex process, with a fresh session and fresh context;
+several run concurrently, and the dashboard is how you watch and steer them.
+Arming a loop spawns a Codex carrying that loop's own console token, arms the
+loop under that token, and types the opening task in once the process is up.
+The loop is claimed by that Codex's first hook, in its own session — so two
+loops never share a session, and arming a second can no longer repoint the
+first's binding. Selecting a loop and pressing `ctrl-]` shows that loop's
+Codex; `ctrl-]` returns to the dashboard. Only the selected agent is drawn,
+but all of them drain their output continuously, so switching is instant, and
+only the on-screen agent's terminal modes reach the real terminal.
+
+Stopping a loop (`d`) kills its Codex and marks its run killed, unbinding the
+process — the session it ran in is released cleanly rather than left pointing
+at a dead run.
 
 The agent and the dashboard each own the whole terminal. You land on the
-dashboard — it is home — and `Tab` flips to the agent, `ctrl-]` back. The
-agent is sized to the full
+dashboard — it is home — and `ctrl-]` flips to the selected loop's agent,
+`ctrl-]` back. An agent is sized to the full
 terminal and keeps that size while the dashboard is up, so a flip never
 resizes it and never makes it reflow — the flip is instant, and the agent's
 screen survives it untouched in the emulator. This is the background model

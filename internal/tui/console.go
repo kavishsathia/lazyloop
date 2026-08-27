@@ -10,24 +10,18 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"hamster/internal/ir"
 	"hamster/internal/store"
 )
 
-// The console is the left pane once it has something to say. It is a small
-// state machine over keystrokes: which pane has focus, whether a line is
-// being typed, and what the daemon last reported. Every action it takes goes
-// through the Backend; it never touches run state itself.
-
 const prefixKey = 0x1d // ctrl-]
 
-// screenMode is which full screen is showing. lazyloop and the agent each own
-// the whole terminal; a keystroke flips between them. The agent runs the
-// whole time, drawn only while it is the one on screen.
+// screenMode is which full screen is showing.
 type screenMode int
 
 const (
-	screenAgent     screenMode = iota // Codex fills the screen
-	screenDashboard                   // the lazyloop console fills the screen
+	screenAgent     screenMode = iota // the selected loop's Codex fills the screen
+	screenDashboard                   // the lazyloop dashboard fills the screen
 )
 
 type mode int
@@ -42,9 +36,9 @@ const (
 type panelFocus int
 
 const (
-	focusList   panelFocus = iota // the list of loops (up/down selects)
-	focusSource                   // the selected loop's source (up/down scrolls)
-	focusLogs                     // the selected loop's log (up/down scrolls)
+	focusList panelFocus = iota
+	focusSource
+	focusLogs
 )
 
 // Hooks tells the console whether the agent's hooks reach the daemon at all,
@@ -57,32 +51,16 @@ type Hooks struct {
 type console struct {
 	mu      sync.Mutex
 	backend Backend
-	token   string
 	dir     string
 	hooks   Hooks
 	now     func() time.Time
 
-	screen    screenMode
-	mode      mode
-	line      []rune
-	message   string
-	armKill   bool
-	view      *store.ConsoleObservation
-	viewErr   error
-	lastTraps int
-	dirty     func()
-	// bell is rung when a trap newly opens, so an escalation reaches a person
-	// who is watching the agent instead of the dashboard. Optional.
-	bell func()
-	// sendAgent types into the agent. Arming a loop uses it to hand the agent
-	// its opening task, so a loop started from the dashboard begins on its own
-	// without the person flipping over to prompt it. Optional.
-	sendAgent func([]byte)
-	// quit ends the whole session. Ctrl-C or q from the dashboard calls it.
-	// Optional.
-	quit func()
+	screen  screenMode
+	mode    mode
+	line    []rune
+	message string
+	armKill bool
 
-	// The three panels and what is selected within them.
 	panel           panelFocus
 	loops           []store.LoopSummary
 	selectedID      string
@@ -90,18 +68,23 @@ type console struct {
 	srcScroll       int
 	logScroll       int
 	logUserScrolled bool
+	lastTraps       int
+
+	dirty func()
+	// Callbacks the runtime supplies.
+	bell      func()                           // ring the terminal on a new escalation
+	quit      func()                           // end the whole session
+	startLoop func(ir.Machine, string, string) // spawn a Codex for a newly armed loop
+	killAgent func(string)                     // kill the Codex running a loop
 }
 
-func newConsole(backend Backend, token, dir string, hooks Hooks, dirty func()) *console {
-	// The dashboard is home: you land on lazyloop and flip to the agent when
-	// you want to talk to it.
-	return &console{backend: backend, token: token, dir: dir, hooks: hooks, now: time.Now, dirty: dirty, screen: screenDashboard}
+func newConsole(backend Backend, dir string, hooks Hooks, dirty func()) *console {
+	return &console{backend: backend, dir: dir, hooks: hooks, now: time.Now, dirty: dirty, screen: screenDashboard}
 }
 
 // route takes raw bytes from the person's terminal and returns the bytes the
-// agent should see. While the agent fills the screen every key reaches it
-// except the prefix, which flips to the dashboard; while the dashboard fills
-// the screen every key acts on it, and nothing is forwarded.
+// selected agent should see. On the agent screen everything but the prefix is
+// forwarded; on the dashboard every key acts on it and nothing is forwarded.
 func (c *console) route(input []byte) []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -122,8 +105,6 @@ func (c *console) route(input []byte) []byte {
 			continue
 		}
 		if b == 0x1b {
-			// Arrow keys drive the panels; other escape sequences are ignored,
-			// and a lone escape is the cancel key.
 			if index+2 < len(input) && input[index+1] == '[' {
 				switch input[index+2] {
 				case 'A':
@@ -152,7 +133,6 @@ func (c *console) route(input []byte) []byte {
 			continue
 		}
 		if b >= 0x80 {
-			// Multi-byte text only matters to the line editor.
 			r, size := utf8.DecodeRune(input[index:])
 			if c.mode != modeKeys && unicode.IsPrint(r) {
 				c.line = append(c.line, r)
@@ -199,8 +179,6 @@ func (c *console) key(r rune) {
 		c.nav(-1)
 	case 'n':
 		c.mode, c.line, c.message = modeLoop, nil, ""
-	case 'x':
-		c.run("disarmed", func(ctx context.Context) error { return c.backend.Disarm(ctx, c.token) })
 	case 'a':
 		c.answer(store.TrapApprove, "")
 	case 'r':
@@ -208,20 +186,7 @@ func (c *console) key(r rune) {
 			c.mode, c.line, c.message = modeNote, nil, ""
 		}
 	case 'd':
-		if c.view == nil || c.view.Run == nil || !c.view.Bound {
-			c.message = "nothing running to stop"
-			return
-		}
-		if !c.armKill {
-			c.armKill = true
-			c.message = "press d again to stop the running loop"
-			return
-		}
-		c.armKill = false
-		session := c.view.CodexSessionID
-		c.run("stopped", func(ctx context.Context) error {
-			return c.backend.Kill(ctx, session, "stopped from the lazyloop console")
-		})
+		c.stopSelected()
 	case 's':
 		if c.hooks.Installed || c.hooks.Install == nil {
 			return
@@ -231,7 +196,7 @@ func (c *console) key(r rune) {
 			return
 		}
 		c.hooks.Installed = true
-		c.message = "hooks installed; restart the agent to pick them up"
+		c.message = "hooks installed; new loops will be governed"
 	default:
 		if r >= '1' && r <= '9' {
 			c.choose(int(r - '1'))
@@ -268,67 +233,33 @@ func (c *console) edit(r rune) {
 	}
 }
 
+// arm compiles what the person typed and hands it to the runtime, which
+// spawns a fresh Codex for it. A loop is one agent's whole job.
 func (c *console) arm(text string) {
 	machine, source, err := CompileRequest(text)
 	if err != nil {
 		c.message = "loop: " + firstLine(err.Error())
 		return
 	}
-	prompt := agentPrompt(text, source)
-	label := strings.TrimSpace(text)
-	c.message = "…"
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		err := c.backend.Arm(ctx, c.token, c.dir, machine, source, label)
-		c.mu.Lock()
-		start := err == nil && c.sendAgent != nil
-		if err != nil {
-			c.message = firstLine(err.Error())
-		} else if start {
-			c.message = "armed — starting the agent"
-		} else {
-			c.message = "armed: " + text
-		}
-		send := c.sendAgent
-		c.mu.Unlock()
-		if start {
-			// The text lands first, then Enter a beat later, so the agent's
-			// composer has ingested the whole line before it submits.
-			send([]byte(prompt))
-			time.Sleep(150 * time.Millisecond)
-			send([]byte("\r"))
-		}
-		c.dirty()
-		c.refresh()
-	}()
-}
-
-// agentPrompt is the opening task typed into the agent when a loop is armed.
-// The hook that claims the loop already tells the agent what must pass, so
-// this only has to point it at the work and set the stopping condition.
-func agentPrompt(text, source string) string {
-	command := strings.TrimSpace(text)
-	if strings.HasPrefix(command, "goal") || strings.HasPrefix(command, "foreach") || strings.HasSuffix(command, ".hmstr") {
-		return "I've armed a Hamster loop. Work it until Hamster reports the loop complete or escalates."
+	if c.startLoop == nil {
+		c.message = "cannot start a loop in this mode"
+		return
 	}
-	return fmt.Sprintf("Make this pass, and keep working until Hamster reports the loop complete: %s", command)
+	c.message = "starting a Codex for this loop…"
+	go c.startLoop(machine, source, strings.TrimSpace(text))
 }
 
-// requestQuit ends the whole session.
 func (c *console) requestQuit() {
 	if c.quit != nil {
 		c.quit()
 	}
 }
 
-// cyclePanel moves keyboard focus between the three panels.
 func (c *console) cyclePanel(delta int) {
 	c.panel = panelFocus((int(c.panel) + delta + 3) % 3)
 	c.dirty()
 }
 
-// nav moves within the focused panel: selecting a loop, or scrolling text.
 func (c *console) nav(delta int) {
 	switch c.panel {
 	case focusList:
@@ -363,6 +294,7 @@ func (c *console) moveSelection(delta int) {
 	if id := c.loops[index].ID; id != c.selectedID {
 		c.selectedID = id
 		c.srcScroll, c.logScroll, c.logUserScrolled = 0, 0, false
+		c.detail = nil
 	}
 }
 
@@ -375,14 +307,69 @@ func (c *console) selectedIndex() int {
 	return 0
 }
 
-// openTrap is the trap awaiting an answer: the selected loop's if it has one,
-// otherwise the running loop's.
+func (c *console) selectedSummary() (store.LoopSummary, bool) {
+	for _, loop := range c.loops {
+		if loop.ID == c.selectedID {
+			return loop, true
+		}
+	}
+	return store.LoopSummary{}, false
+}
+
+// selected reports the loop the agent screen should show.
+func (c *console) selected() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.selectedID
+}
+
+func (c *console) activeScreen() screenMode {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.screen
+}
+
+func (c *console) setMessage(message string) {
+	c.mu.Lock()
+	c.message = message
+	c.mu.Unlock()
+	c.dirty()
+}
+
+// selectLoop focuses a loop, resetting the panels that follow it. Used by the
+// runtime after arming so the new loop is the one on screen.
+func (c *console) selectLoop(id string) {
+	c.mu.Lock()
+	c.selectedID = id
+	c.srcScroll, c.logScroll, c.logUserScrolled = 0, 0, false
+	c.detail = nil
+	c.mu.Unlock()
+	c.dirty()
+}
+
+func (c *console) stopSelected() {
+	summary, ok := c.selectedSummary()
+	if !ok {
+		c.message = "no loop selected"
+		return
+	}
+	if !c.armKill {
+		c.armKill = true
+		c.message = "press d again to stop this loop"
+		return
+	}
+	c.armKill = false
+	id := summary.ID
+	if c.killAgent != nil {
+		c.killAgent(id)
+	}
+	c.run("stopped", func(ctx context.Context) error { return c.backend.StopLoop(ctx, id) })
+}
+
+// openTrap is the trap the selected loop is waiting on, if any.
 func (c *console) openTrap() *store.Trap {
 	if c.detail != nil && len(c.detail.Traps) > 0 {
 		return &c.detail.Traps[0]
-	}
-	if c.view != nil && len(c.view.Traps) > 0 {
-		return &c.view.Traps[0]
 	}
 	return nil
 }
@@ -442,32 +429,27 @@ func (c *console) run(done string, action func(context.Context) error) {
 	}()
 }
 
-// refresh asks the daemon what it knows: the running loop, the list of loops,
-// and the selected loop's source and log. Called on a timer and after every
-// action, so the panels never wait a full tick to show what just happened.
+// refresh reloads the list of loops and the selected loop's detail. Called on
+// a timer and after every action.
 func (c *console) refresh() {
 	if c.backend == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	view, err := c.backend.Observe(ctx, c.token)
-	loops, loopsErr := c.backend.ListLoops(ctx, c.dir)
-	if loopsErr != nil {
+	loops, err := c.backend.ListLoops(ctx, c.dir)
+	if err != nil {
 		loops = nil
 	}
 
 	c.mu.Lock()
 	traps := 0
-	if view != nil {
-		traps = len(view.Traps)
+	for _, loop := range loops {
+		traps += loop.Traps
 	}
 	escalated := traps > c.lastTraps
 	c.lastTraps = traps
-	c.view, c.viewErr = view, err
 	c.loops = loops
-	// Keep the selection valid; default to the newest loop, which is the one
-	// running or armed right now.
 	if c.selectedID == "" || !c.hasLoop(c.selectedID) {
 		if len(loops) > 0 {
 			c.selectedID = loops[0].ID
@@ -483,7 +465,6 @@ func (c *console) refresh() {
 	if selID != "" {
 		detail, _ = c.backend.LoadLoop(ctx, selID)
 	}
-
 	c.mu.Lock()
 	if selID == c.selectedID {
 		c.detail = detail
@@ -505,24 +486,22 @@ func (c *console) hasLoop(id string) bool {
 	return false
 }
 
-func sameView(a, b *store.ConsoleObservation) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	if a.Bound != b.Bound || len(a.Traps) != len(b.Traps) || (a.Armed == nil) != (b.Armed == nil) || (a.Run == nil) != (b.Run == nil) {
-		return false
-	}
-	if a.Run != nil && (a.Run.ID != b.Run.ID || a.Run.StateID != b.Run.StateID || a.Run.Status != b.Run.Status || a.Run.Iteration != b.Run.Iteration || a.Run.UpdatedAt != b.Run.UpdatedAt) {
-		return false
-	}
-	return a.Summary == b.Summary && a.TrapCount == b.TrapCount
-}
-
 func firstLine(text string) string {
 	if index := strings.IndexByte(text, '\n'); index >= 0 {
 		return text[:index]
 	}
 	return text
+}
+
+// agentPrompt is the opening task typed into the fresh Codex for a loop. The
+// hook that claims the loop already tells the agent what must pass, so this
+// only points it at the work and sets the stopping condition.
+func agentPrompt(text, source string) string {
+	command := strings.TrimSpace(text)
+	if strings.HasPrefix(command, "goal") || strings.HasPrefix(command, "foreach") || strings.HasSuffix(command, ".hmstr") {
+		return "I've armed a Hamster loop. Work it until Hamster reports the loop complete or escalates."
+	}
+	return fmt.Sprintf("Make this pass, and keep working until Hamster reports the loop complete: %s", command)
 }
 
 // limitRemaining describes how much of a limit is left, as the person reads it.

@@ -2,7 +2,6 @@ package tui
 
 import (
 	"bytes"
-	"regexp"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -19,15 +18,9 @@ func TestFullLayoutGivesTheWholeWidth(t *testing.T) {
 	}
 }
 
-var escapes = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
-
-func visible(lines []string) string {
-	return escapes.ReplaceAllString(strings.Join(lines, "\n"), "")
-}
-
 func TestPaneLinesAreExactlyPaneWide(t *testing.T) {
 	lay := fullLayout(24, 100)
-	c := newConsole(nil, "console", "/tmp/some-project", Hooks{Installed: true}, func() {})
+	c := newConsole(nil, "/tmp/some-project", Hooks{Installed: true}, func() {})
 	for quip := range quips {
 		lines := c.render(lay, quip)
 		if len(lines) != lay.rows {

@@ -14,11 +14,9 @@ import (
 // Backend is what the console pane talks to. The daemon implements it over
 // the control socket; tests implement it in memory.
 type Backend interface {
-	Observe(ctx context.Context, console string) (*store.ConsoleObservation, error)
-	Arm(ctx context.Context, console, workspaceRoot string, machine ir.Machine, source, label string) error
-	Disarm(ctx context.Context, console string) error
+	Arm(ctx context.Context, console, workspaceRoot string, machine ir.Machine, source, label string) (*store.Loop, error)
 	Resolve(ctx context.Context, trapID, resolution, note string) error
-	Kill(ctx context.Context, codexSessionID, reason string) error
+	StopLoop(ctx context.Context, id string) error
 	ListLoops(ctx context.Context, workspaceRoot string) ([]store.LoopSummary, error)
 	LoadLoop(ctx context.Context, id string) (*store.LoopDetail, error)
 }
@@ -28,30 +26,22 @@ type DaemonBackend struct {
 	Client daemon.Client
 }
 
-func (b DaemonBackend) Observe(ctx context.Context, console string) (*store.ConsoleObservation, error) {
-	var view store.ConsoleObservation
-	if err := b.Client.Call(ctx, requestID(), "console.observe", map[string]string{"console": console}, &view); err != nil {
+func (b DaemonBackend) Arm(ctx context.Context, console, workspaceRoot string, machine ir.Machine, source, label string) (*store.Loop, error) {
+	var loop store.Loop
+	if err := b.Client.Call(ctx, requestID(), "console.arm", map[string]any{
+		"console": console, "workspace_root": workspaceRoot, "machine": machine, "source": source, "label": label,
+	}, &loop); err != nil {
 		return nil, err
 	}
-	return &view, nil
-}
-
-func (b DaemonBackend) Arm(ctx context.Context, console, workspaceRoot string, machine ir.Machine, source, label string) error {
-	return b.Client.Call(ctx, requestID(), "console.arm", map[string]any{
-		"console": console, "workspace_root": workspaceRoot, "machine": machine, "source": source, "label": label,
-	}, nil)
-}
-
-func (b DaemonBackend) Disarm(ctx context.Context, console string) error {
-	return b.Client.Call(ctx, requestID(), "console.disarm", map[string]string{"console": console}, nil)
+	return &loop, nil
 }
 
 func (b DaemonBackend) Resolve(ctx context.Context, trapID, resolution, note string) error {
 	return b.Client.Call(ctx, requestID(), "trap.resolve", map[string]string{"trap_id": trapID, "resolution": resolution, "note": note}, nil)
 }
 
-func (b DaemonBackend) Kill(ctx context.Context, codexSessionID, reason string) error {
-	return b.Client.Call(ctx, requestID(), "run.kill", map[string]string{"session_id": codexSessionID, "reason": reason}, nil)
+func (b DaemonBackend) StopLoop(ctx context.Context, id string) error {
+	return b.Client.Call(ctx, requestID(), "loops.stop", map[string]string{"id": id}, nil)
 }
 
 func (b DaemonBackend) ListLoops(ctx context.Context, workspaceRoot string) ([]store.LoopSummary, error) {
