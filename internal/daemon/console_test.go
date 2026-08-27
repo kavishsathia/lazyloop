@@ -78,6 +78,11 @@ func TestArmedLaunchIsClaimedByTheNextPromptAndAnnounced(t *testing.T) {
 	if !strings.Contains(decision.Context, "started run "+decision.RunID) || !strings.Contains(decision.Context, "lazyloop console") {
 		t.Fatalf("claim context = %q", decision.Context)
 	}
+	// The agent did not write this loop, so the announcement must say what
+	// it has to make pass.
+	if !strings.Contains(decision.Context, "`true` passes") {
+		t.Fatalf("claim context does not name the verifier: %q", decision.Context)
+	}
 	run, err := state.FindCurrentRun(context.Background(), "session", "")
 	if err != nil || run.ID != decision.RunID || run.Status != "running" {
 		t.Fatalf("bound run = %+v (%v)", run, err)

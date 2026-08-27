@@ -322,6 +322,39 @@ func (r *Runner) failRun(ctx context.Context, run *store.Run, cause error) (hook
 	}, nil
 }
 
+// describeFailure names a failed verifier the way an agent needs to read it:
+// what was run, and what it said. Without the command an agent that did not
+// write the loop has nothing to make pass; without the output it has no
+// idea why it did not.
+func describeFailure(observation VerificationObservation) string {
+	detail := observation.Name
+	if observation.Command != "" {
+		detail += fmt.Sprintf(" (`%s` must pass)", observation.Command)
+	}
+	if observation.Error != "" {
+		detail += ": " + observation.Error
+	}
+	if output := strings.TrimSpace(observation.Output); output != "" {
+		detail += ": " + output
+	}
+	return detail
+}
+
+// VerifierCommands lists the commands a machine's verifiers run, in ladder
+// order, so a run can be announced by what it requires rather than by name.
+func VerifierCommands(machine ir.Machine) []string {
+	var commands []string
+	for _, state := range machine.States {
+		if state.Kind != ir.StateVerify || state.Expression == nil {
+			continue
+		}
+		if command := verificationCommand(state.Expression); command != "" {
+			commands = append(commands, command)
+		}
+	}
+	return commands
+}
+
 func signalDecision(run *store.Run, observations []VerificationObservation) hook.Decision {
 	decision := hook.Decision{Permission: "allow", Tracked: true, RunID: run.ID}
 	if run.Status == "complete" {
@@ -341,11 +374,7 @@ func signalDecision(run *store.Run, observations []VerificationObservation) hook
 		if observation.Passed && observation.Error == "" {
 			continue
 		}
-		detail := observation.Name
-		if observation.Error != "" {
-			detail += ": " + observation.Error
-		}
-		failed = append(failed, detail)
+		failed = append(failed, describeFailure(observation))
 	}
 	if len(failed) > 0 {
 		decision.Context = fmt.Sprintf("Hamster verification failed for run %s at %s. Iteration %d is ready for the next permitted action.", run.ID, strings.Join(failed, "; "), run.Iteration)
@@ -512,9 +541,12 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 			activateLimit(environment, run.Machine, state, run.Iteration, r.clock.Now())
 			run.StateID = state.Next
 		case ir.StateVerify:
-			value, err := r.evaluator(run).Evaluate(ctx, *state.Expression, environment)
+			var output string
+			evaluator := r.evaluator(run)
+			evaluator.Output = &output
+			value, err := evaluator.Evaluate(ctx, *state.Expression, environment)
 			if err != nil {
-				r.recordVerification(run.ID, VerificationObservation{Name: state.Name, Command: verificationCommand(state.Expression), Error: err.Error()})
+				r.recordVerification(run.ID, VerificationObservation{Name: state.Name, Command: verificationCommand(state.Expression), Error: err.Error(), Output: output})
 				if err := failVerification(run, environment, state, r.clock.Now()); err != nil {
 					return err
 				}
@@ -524,7 +556,11 @@ func (r *Runner) pump(ctx context.Context, run *store.Run, environment Environme
 				continue
 			}
 			passed := truthy(value)
-			r.recordVerification(run.ID, VerificationObservation{Name: state.Name, Command: verificationCommand(state.Expression), Passed: passed})
+			observation := VerificationObservation{Name: state.Name, Command: verificationCommand(state.Expression), Passed: passed}
+			if !passed {
+				observation.Output = output
+			}
+			r.recordVerification(run.ID, observation)
 			environment[state.Name] = passed
 			if !passed {
 				if err := failVerification(run, environment, state, r.clock.Now()); err != nil {

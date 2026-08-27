@@ -137,6 +137,9 @@ func (c *console) render(lay layout, quip int) []string {
 					text += "  " + check.Command
 				}
 				para(text, style)
+				if output := firstLine(strings.TrimSpace(check.Output)); output != "" && !check.Passed {
+					para("  "+lastLine(check.Output), styleDim)
+				}
 			}
 		}
 		if view.Summary.Events > 0 {
@@ -208,6 +211,12 @@ func (c *console) render(lay layout, quip int) []string {
 		rows = append(rows, fit("", width, ""))
 	}
 	return rows
+}
+
+// lastLine is where a failing command puts its verdict.
+func lastLine(text string) string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
 }
 
 func editorLines(prompt string, text []rune, width int) []line {

@@ -94,6 +94,8 @@ type VerificationObservation struct {
 	Command string `json:"command,omitempty"`
 	Passed  bool   `json:"passed"`
 	Error   string `json:"error,omitempty"`
+	// Output is the tail of what a failing verifier printed.
+	Output string `json:"output,omitempty"`
 }
 
 type EventObservation struct {

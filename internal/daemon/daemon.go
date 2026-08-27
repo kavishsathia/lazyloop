@@ -547,8 +547,15 @@ func announceLaunch(decision hook.Decision, launched *store.Run) hook.Decision {
 	if decision.Permission == "deny" {
 		return decision
 	}
-	announcement := fmt.Sprintf("Hamster started run %s for %s at state %s from the lazyloop console. Follow this loop until Hamster reports completion or escalation.",
-		launched.ID, control.MachineLabel(launched.Machine), launched.StateID)
+	announcement := fmt.Sprintf("Hamster started run %s for %s at state %s from the lazyloop console.", launched.ID, control.MachineLabel(launched.Machine), launched.StateID)
+	if commands := hamsterruntime.VerifierCommands(launched.Machine); len(commands) > 0 {
+		quoted := make([]string, len(commands))
+		for index, command := range commands {
+			quoted[index] = "`" + command + "`"
+		}
+		announcement += fmt.Sprintf(" The loop completes when %s passes; Hamster runs it after every tool call and reports what it prints.", strings.Join(quoted, " and "))
+	}
+	announcement += " Follow this loop until Hamster reports completion or escalation."
 	if decision.Context != "" {
 		announcement += " " + decision.Context
 	}

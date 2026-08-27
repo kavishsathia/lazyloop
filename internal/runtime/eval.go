@@ -17,6 +17,9 @@ type Evaluator struct {
 	WorkingDirectory string
 	Verifier         Verifier
 	RunID            string
+	// Output, when set, receives what the most recent bash.check printed, so
+	// a failed verifier can be reported with its own words.
+	Output *string
 	// Observed reports whether this run has recorded a verdict. It is what
 	// makes "the observer must speak" a machine-checked postcondition rather
 	// than an instruction the observer could ignore.
@@ -114,7 +117,11 @@ func (e Evaluator) call(ctx context.Context, expression ir.Expression, environme
 		if verifier == nil {
 			verifier = CommandVerifier{}
 		}
-		return verifier.Check(ctx, e.WorkingDirectory, command)
+		passed, output, err := verifier.Check(ctx, e.WorkingDirectory, command)
+		if e.Output != nil {
+			*e.Output = output
+		}
+		return passed, err
 	default:
 		return nil, fmt.Errorf("runtime cannot execute %q", path)
 	}

@@ -12,6 +12,15 @@ type Command struct {
 	Args []string
 }
 
+// IsCLI reports whether a command word names the Hamster CLI. lazyloop is
+// the same binary under the name people type; an agent that reaches for it
+// must meet the same authority checks, or `lazyloop resolve` would answer a
+// trap that `hamster resolve` is denied.
+func IsCLI(word string) bool {
+	name := filepath.Base(word)
+	return name == "hamster" || name == "lazyloop"
+}
+
 func Parse(command string) (Command, bool, error) {
 	words, err := shellWords(command)
 	if err != nil || len(words) == 0 {
@@ -24,7 +33,7 @@ func Parse(command string) (Command, bool, error) {
 			index++
 		}
 	}
-	if index >= len(words) || filepath.Base(words[index]) != "hamster" {
+	if index >= len(words) || !IsCLI(words[index]) {
 		return Command{}, false, nil
 	}
 	index++
@@ -56,7 +65,7 @@ func Invokes(command string) bool {
 			continue
 		}
 		name := filepath.Base(words[index])
-		if name == "hamster" {
+		if IsCLI(name) {
 			return true
 		}
 		if name == "npx" {
@@ -64,7 +73,7 @@ func Invokes(command string) bool {
 				if strings.HasPrefix(word, "-") {
 					continue
 				}
-				return filepath.Base(word) == "hamster"
+				return IsCLI(word)
 			}
 			continue
 		}

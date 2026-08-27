@@ -446,7 +446,7 @@ func TestGoalSignalTurnsVerifierErrorIntoRemediation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Permission != "allow" || !strings.Contains(decision.Context, "tests: runner unavailable") {
+	if decision.Permission != "allow" || !strings.Contains(decision.Context, "tests (`missing-verifier` must pass): runner unavailable") {
 		t.Fatalf("decision = %#v", decision)
 	}
 	current, err := runner.store.GetRun(context.Background(), run.ID)

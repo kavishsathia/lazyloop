@@ -155,6 +155,9 @@ func classifyTool(event Event) string {
 				return capability
 			}
 		}
+		if command == "lazyloop" || strings.HasPrefix(command, "lazyloop ") {
+			return "hamster"
+		}
 		return "bash"
 	}
 	if strings.HasPrefix(event.ToolName, "mcp__") {

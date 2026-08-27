@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -36,24 +37,40 @@ func (c *FixedClock) Advance(duration time.Duration) {
 	c.now = c.now.Add(duration)
 }
 
+// Verifier answers whether a command passes, and keeps what the command said
+// while failing: that output is the only thing an agent has to go on when it
+// did not write the verifier itself.
 type Verifier interface {
-	Check(ctx context.Context, workingDirectory, command string) (bool, error)
+	Check(ctx context.Context, workingDirectory, command string) (passed bool, output string, err error)
 }
 
 type CommandVerifier struct{}
 
-func (CommandVerifier) Check(ctx context.Context, workingDirectory, command string) (bool, error) {
+// maxVerifierOutput bounds what a failing verifier hands back. The end of the
+// output is kept: a test runner puts its summary there.
+const maxVerifierOutput = 2 << 10
+
+func (CommandVerifier) Check(ctx context.Context, workingDirectory, command string) (bool, string, error) {
 	process := exec.CommandContext(ctx, "sh", "-c", command)
 	process.Dir = workingDirectory
-	err := process.Run()
+	combined, err := process.CombinedOutput()
+	output := tailOutput(combined, maxVerifierOutput)
 	if err == nil {
-		return true, nil
+		return true, output, nil
 	}
 	var exitError *exec.ExitError
 	if errors.As(err, &exitError) {
-		return false, nil
+		return false, output, nil
 	}
-	return false, fmt.Errorf("execute verifier: %w", err)
+	return false, output, fmt.Errorf("execute verifier: %w", err)
+}
+
+func tailOutput(output []byte, limit int) string {
+	text := strings.TrimSpace(string(output))
+	if len(text) <= limit {
+		return text
+	}
+	return "…" + text[len(text)-limit:]
 }
 
 // Collector captures the evidence an observer is shown. It is separate from
@@ -111,6 +128,8 @@ type VerificationObservation struct {
 	Command string `json:"command,omitempty"`
 	Passed  bool   `json:"passed"`
 	Error   string `json:"error,omitempty"`
+	// Output is the tail of what a failing verifier printed.
+	Output string `json:"output,omitempty"`
 }
 
 type ReplayVerifier struct {
@@ -123,19 +142,19 @@ func NewReplayVerifier(results []VerificationResult) *ReplayVerifier {
 	return &ReplayVerifier{results: append([]VerificationResult(nil), results...)}
 }
 
-func (v *ReplayVerifier) Check(_ context.Context, workingDirectory, command string) (bool, error) {
+func (v *ReplayVerifier) Check(_ context.Context, workingDirectory, command string) (bool, string, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.calls = append(v.calls, VerificationCall{WorkingDirectory: workingDirectory, Command: command})
 	if len(v.results) == 0 {
-		return false, errors.New("trace has no verifier result for " + command)
+		return false, "", errors.New("trace has no verifier result for " + command)
 	}
 	result := v.results[0]
 	v.results = v.results[1:]
 	if result.Error != "" {
-		return false, errors.New(result.Error)
+		return false, "", errors.New(result.Error)
 	}
-	return result.Passed, nil
+	return result.Passed, "", nil
 }
 
 func (v *ReplayVerifier) Calls() []VerificationCall {
