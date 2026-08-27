@@ -175,15 +175,24 @@ func (s *Store) ClaimLoop(ctx context.Context, console, codexSessionID string) (
 // LoopSummary is one row in the list of loops. Status is "armed" for a loop
 // nobody has claimed, otherwise the status of the run executing it.
 type LoopSummary struct {
-	ID        string     `json:"id"`
-	Label     string     `json:"label"`
-	Status    string     `json:"status"`
-	RunID     string     `json:"run_id,omitempty"`
-	Traps     int        `json:"traps"`
-	ToolCalls int        `json:"tool_calls"`
-	Started   *time.Time `json:"started,omitempty"`
-	Ended     *time.Time `json:"ended,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID        string      `json:"id"`
+	Label     string      `json:"label"`
+	Status    string      `json:"status"`
+	RunID     string      `json:"run_id,omitempty"`
+	Traps     int         `json:"traps"`
+	ToolCalls int         `json:"tool_calls"`
+	Started   *time.Time  `json:"started,omitempty"`
+	Ended     *time.Time  `json:"ended,omitempty"`
+	CreatedAt time.Time   `json:"created_at"`
+	Agents    []LoopAgent `json:"agents,omitempty"`
+}
+
+// A LoopAgent is one Codex agent working a loop: the root agent and, once a
+// loop forks, its subagents. Each is a process in the loop's session.
+type LoopAgent struct {
+	AgentID string `json:"agent_id"`
+	Root    bool   `json:"root"`
+	Status  string `json:"status"`
 }
 
 // ListLoops returns every loop armed in a workspace, newest first, each with
@@ -209,16 +218,17 @@ FROM loops l LEFT JOIN runs r ON r.id=l.run_id`
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	summaries := []LoopSummary{}
 	for rows.Next() {
 		var summary LoopSummary
 		var created, runCreated, runUpdated, runStatus string
 		if err := rows.Scan(&summary.ID, &summary.Label, &summary.Status, &summary.RunID, &created,
 			&runCreated, &runUpdated, &runStatus, &summary.Traps, &summary.ToolCalls); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		if summary.CreatedAt, err = parseStoredTime(created); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		if runCreated != "" {
@@ -235,7 +245,51 @@ FROM loops l LEFT JOIN runs r ON r.id=l.run_id`
 		}
 		summaries = append(summaries, summary)
 	}
-	return summaries, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	// The single pooled connection cannot serve a nested query, so gather the
+	// agents only after the list query's rows are closed.
+	rows.Close()
+	for index := range summaries {
+		if summaries[index].RunID == "" {
+			continue
+		}
+		agents, err := s.loopAgents(ctx, summaries[index].RunID)
+		if err != nil {
+			return nil, err
+		}
+		summaries[index].Agents = agents
+	}
+	return summaries, nil
+}
+
+// loopAgents lists the agents in a loop's session — the root agent and any
+// subagents it forked — with the status of the run each is on.
+func (s *Store) loopAgents(ctx context.Context, runID string) ([]LoopAgent, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT p.agent_id, COALESCE(r.status, '')
+FROM processes p
+LEFT JOIN runs r ON r.id = p.current_run_id
+WHERE p.session_id = (SELECT p2.session_id FROM runs r2 JOIN processes p2 ON p2.id = r2.process_id WHERE r2.id = ?)
+ORDER BY (p.agent_id != ?), p.created_at, p.id`, runID, RootAgent)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	agents := []LoopAgent{}
+	for rows.Next() {
+		var agent LoopAgent
+		if err := rows.Scan(&agent.AgentID, &agent.Status); err != nil {
+			return nil, err
+		}
+		agent.Root = agent.AgentID == RootAgent
+		if agent.Status == "" {
+			agent.Status = "idle"
+		}
+		agents = append(agents, agent)
+	}
+	return agents, rows.Err()
 }
 
 // isTerminalRunStatus reports whether a run has stopped, so its duration is

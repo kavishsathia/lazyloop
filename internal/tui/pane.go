@@ -101,6 +101,7 @@ func (c *console) renderList(width, height int) []string {
 	}
 	inner := width - 4
 	body := make([]line, 0, len(c.loops))
+	selectedRow := 0
 	for _, loop := range c.loops {
 		marker, style := loopMarker(loop.Status)
 		label := loop.Label
@@ -109,13 +110,30 @@ func (c *console) renderList(width, height int) []string {
 		}
 		if loop.ID == c.selectedID {
 			style = styleFocus
-		}
-		if loop.Traps > 0 && loop.ID != c.selectedID {
+			selectedRow = len(body)
+		} else if loop.Traps > 0 {
 			style = styleWarn
 		}
 		body = append(body, line{loopRow(marker, label, loopMeta(loop, c.now()), inner), style})
+		// Each loop's agents, indented beneath it.
+		for index, agent := range loop.Agents {
+			branch := "├"
+			if index == len(loop.Agents)-1 {
+				branch = "└"
+			}
+			name := "subagent " + shortAgent(agent.AgentID)
+			if agent.Root {
+				name = "root agent"
+			}
+			text := truncateRunes(fmt.Sprintf("  %s %s", branch, name), inner-runeLen(agent.Status)-1)
+			gap := inner - runeLen(text) - runeLen(agent.Status)
+			if gap < 1 {
+				gap = 1
+			}
+			body = append(body, line{text + strings.Repeat(" ", gap) + agent.Status, agentStyle(agent.Status)})
+		}
 	}
-	offset := windowOffset(c.selectedIndex(), len(body), height-2)
+	offset := windowOffset(selectedRow, len(body), height-2)
 	return scrollPanel(width, height, title, border, body, offset)
 }
 
@@ -334,6 +352,29 @@ func clockDuration(d time.Duration) string {
 		return fmt.Sprintf("%d:%02d", seconds/60, seconds%60)
 	}
 	return fmt.Sprintf("%dh%02dm", seconds/3600, (seconds%3600)/60)
+}
+
+func shortAgent(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// agentStyle dims the branch while colouring the status by how the agent's run
+// is doing.
+func agentStyle(status string) string {
+	switch status {
+	case "complete":
+		return styleGood
+	case "running":
+		return styleDim
+	case "trapped", "waiting":
+		return styleWarn
+	case "idle":
+		return styleDim
+	}
+	return styleBad
 }
 
 func loopMarker(status string) (glyph, style string) {

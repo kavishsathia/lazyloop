@@ -303,3 +303,29 @@ func TestListLoopsCarriesToolCallsAndDuration(t *testing.T) {
 	}
 	_ = run
 }
+
+func TestListLoopsCarriesTheRootAgent(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "hamster.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	ctx := context.Background()
+	if _, err := state.ArmLoop(ctx, "console-1", "/repo", consoleMachine(), "src", "go test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.ClaimLoop(ctx, "console-1", "session"); err != nil {
+		t.Fatal(err)
+	}
+	loops, err := state.ListLoops(ctx, "/repo", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loops) != 1 || len(loops[0].Agents) != 1 {
+		t.Fatalf("loop agents = %+v", loops[0].Agents)
+	}
+	agent := loops[0].Agents[0]
+	if !agent.Root || agent.AgentID != RootAgent || agent.Status != "running" {
+		t.Fatalf("root agent = %+v", agent)
+	}
+}
