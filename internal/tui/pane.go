@@ -164,7 +164,7 @@ func (c *console) renderSource(width, height int) []string {
 		return scrollPanel(width, height, "building", borderRun, body, 0)
 	}
 	if c.detail == nil || strings.TrimSpace(c.detail.Source) == "" {
-		return scrollPanel(width, height, "goal", border, []line{{"no source recorded for this loop", styleDim}}, 0)
+		return scrollPanel(width, height, "loop", border, []line{{"no source recorded for this loop", styleDim}}, 0)
 	}
 	var body []line
 	for _, raw := range strings.Split(strings.TrimRight(c.detail.Source, "\n"), "\n") {
@@ -174,7 +174,7 @@ func (c *console) renderSource(width, height int) []string {
 		}
 		body = append(body, line{raw, style})
 	}
-	return scrollPanel(width, height, "goal", border, body, c.srcScroll)
+	return scrollPanel(width, height, "loop", border, body, c.srcScroll)
 }
 
 func (c *console) renderLogs(width, height int) []string {
