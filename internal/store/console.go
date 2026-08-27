@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"hamster/internal/ir"
@@ -24,17 +25,19 @@ type ConsoleBinding struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
-// A Launch is a loop armed from a console before any agent has claimed it.
-// The next hook from an unbound root agent carrying the console token turns
-// it into a run — the same shape as a pending fork, for the same reason: the
-// person who armed it cannot know the identity that will pick it up.
-type Launch struct {
+// A Loop is one loop a person armed from lazyloop. It persists: the list of
+// loops survives the run that executed it and the lazyloop session that armed
+// it. Before an agent claims it a loop is "armed"; once claimed it carries the
+// run that executes it, and its status follows that run.
+type Loop struct {
+	ID            string     `json:"id"`
 	Console       string     `json:"console"`
 	WorkspaceRoot string     `json:"workspace_root"`
-	Machine       ir.Machine `json:"machine"`
 	Source        string     `json:"source,omitempty"`
+	Label         string     `json:"label"`
+	Machine       ir.Machine `json:"machine"`
 	CreatedAt     time.Time  `json:"created_at"`
-	ClaimedRunID  string     `json:"claimed_run_id,omitempty"`
+	RunID         string     `json:"run_id,omitempty"`
 	ClaimedAt     *time.Time `json:"claimed_at,omitempty"`
 }
 
@@ -62,9 +65,12 @@ func (s *Store) FindConsole(ctx context.Context, console string) (*ConsoleBindin
 	return &binding, nil
 }
 
-// ArmLaunch replaces whatever the console had armed before; a console holds
-// one next loop, not a queue.
-func (s *Store) ArmLaunch(ctx context.Context, console, workspaceRoot string, machine ir.Machine, source string) (*Launch, error) {
+const loopColumns = `id, console, workspace_root, source, label, machine_json, created_at, COALESCE(run_id, ''), claimed_at`
+
+// ArmLoop records a newly armed loop. A console holds one armed loop at a
+// time, so any earlier loop the same console armed but nobody claimed is
+// dropped; claimed loops stay, because they are the history.
+func (s *Store) ArmLoop(ctx context.Context, console, workspaceRoot string, machine ir.Machine, source, label string) (*Loop, error) {
 	if console == "" || workspaceRoot == "" {
 		return nil, errors.New("console token and workspace root are required")
 	}
@@ -72,68 +78,236 @@ func (s *Store) ArmLaunch(ctx context.Context, console, workspaceRoot string, ma
 	if err != nil {
 		return nil, fmt.Errorf("encode machine: %w", err)
 	}
-	now := formatTime(time.Now().UTC())
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO launches(console, workspace_root, machine_json, source, created_at) VALUES(?, ?, ?, ?, ?)
-ON CONFLICT(console) DO UPDATE SET workspace_root=excluded.workspace_root, machine_json=excluded.machine_json, source=excluded.source,
-created_at=excluded.created_at, claimed_run_id=NULL, claimed_at=NULL`, console, workspaceRoot, machineJSON, source, now); err != nil {
-		return nil, err
-	}
-	return s.PendingLaunch(ctx, console)
-}
-
-// PendingLaunch is the armed loop nobody has claimed yet, or sql.ErrNoRows.
-func (s *Store) PendingLaunch(ctx context.Context, console string) (*Launch, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT console, workspace_root, machine_json, source, created_at, COALESCE(claimed_run_id, ''), claimed_at
-FROM launches WHERE console=? AND claimed_run_id IS NULL`, console)
-	return scanLaunch(row)
-}
-
-func (s *Store) DisarmLaunch(ctx context.Context, console string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM launches WHERE console=? AND claimed_run_id IS NULL`, console)
-	return err
-}
-
-// ClaimLaunch turns the console's armed loop into a run bound to the root
-// agent of the given Codex session. The claim is taken before the run is
-// created so two hooks racing for it cannot both win; the loser sees
-// sql.ErrNoRows, exactly as if nothing had been armed.
-func (s *Store) ClaimLaunch(ctx context.Context, console, codexSessionID string) (*Run, error) {
-	launch, err := s.PendingLaunch(ctx, console)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	taken, err := s.db.ExecContext(ctx, `UPDATE launches SET claimed_run_id='' WHERE console=? AND claimed_run_id IS NULL`, console)
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM loops WHERE console=? AND run_id IS NULL`, console); err != nil {
+		return nil, err
+	}
+	id := newID("loop")
+	now := formatTime(time.Now().UTC())
+	if _, err := tx.ExecContext(ctx, `INSERT INTO loops(id, console, workspace_root, source, label, machine_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		id, console, workspaceRoot, source, label, machineJSON, now); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetLoop(ctx, id)
+}
+
+// PendingLoop is the console's armed, unclaimed loop, or sql.ErrNoRows.
+func (s *Store) PendingLoop(ctx context.Context, console string) (*Loop, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+loopColumns+` FROM loops WHERE console=? AND run_id IS NULL ORDER BY created_at DESC, id DESC LIMIT 1`, console)
+	return scanLoop(row)
+}
+
+func (s *Store) DisarmLoop(ctx context.Context, console string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM loops WHERE console=? AND run_id IS NULL`, console)
+	return err
+}
+
+func (s *Store) GetLoop(ctx context.Context, id string) (*Loop, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+loopColumns+` FROM loops WHERE id=?`, id)
+	return scanLoop(row)
+}
+
+// ClaimLoop turns the console's armed loop into a run bound to the root agent
+// of the given Codex session, and links the run back to the loop so the list
+// can follow it. The claim is taken before the run is created so two hooks
+// racing for it cannot both win; the loser sees sql.ErrNoRows.
+func (s *Store) ClaimLoop(ctx context.Context, console, codexSessionID string) (*Run, error) {
+	loop, err := s.PendingLoop(ctx, console)
+	if err != nil {
+		return nil, err
+	}
+	taken, err := s.db.ExecContext(ctx, `UPDATE loops SET run_id='' WHERE id=? AND run_id IS NULL`, loop.ID)
 	if err != nil {
 		return nil, err
 	}
 	if affected, _ := taken.RowsAffected(); affected == 0 {
 		return nil, sql.ErrNoRows
 	}
-	run, err := s.CreateRun(ctx, CreateRunParams{WorkspaceRoot: launch.WorkspaceRoot, CodexSessionID: codexSessionID, Machine: launch.Machine})
+	run, err := s.CreateRun(ctx, CreateRunParams{WorkspaceRoot: loop.WorkspaceRoot, CodexSessionID: codexSessionID, Machine: loop.Machine})
 	if err != nil {
-		_, _ = s.db.ExecContext(ctx, `UPDATE launches SET claimed_run_id=NULL WHERE console=? AND claimed_run_id=''`, console)
+		_, _ = s.db.ExecContext(ctx, `UPDATE loops SET run_id=NULL WHERE id=? AND run_id=''`, loop.ID)
 		return nil, err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE launches SET claimed_run_id=?, claimed_at=? WHERE console=?`, run.ID, formatTime(time.Now().UTC()), console)
+	_, err = s.db.ExecContext(ctx, `UPDATE loops SET run_id=?, claimed_at=? WHERE id=?`, run.ID, formatTime(time.Now().UTC()), loop.ID)
 	if err != nil {
 		return nil, err
 	}
 	return run, nil
 }
 
-func scanLaunch(row scanner) (*Launch, error) {
-	var launch Launch
+// LoopSummary is one row in the list of loops. Status is "armed" for a loop
+// nobody has claimed, otherwise the status of the run executing it.
+type LoopSummary struct {
+	ID        string    `json:"id"`
+	Label     string    `json:"label"`
+	Status    string    `json:"status"`
+	RunID     string    `json:"run_id,omitempty"`
+	Traps     int       `json:"traps"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ListLoops returns every loop armed in a workspace, newest first, each with
+// the live status of its run. It is the persistent history the list shows.
+func (s *Store) ListLoops(ctx context.Context, workspaceRoot string, limit int) ([]LoopSummary, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	query := `SELECT l.id, l.label, COALESCE(r.status, 'armed'),
+COALESCE(l.run_id, ''), l.created_at,
+(SELECT COUNT(*) FROM traps t WHERE t.run_id=l.run_id AND t.status='open')
+FROM loops l LEFT JOIN runs r ON r.id=l.run_id`
+	args := []any{}
+	if workspaceRoot != "" {
+		query += ` WHERE l.workspace_root=?`
+		args = append(args, workspaceRoot)
+	}
+	query += ` ORDER BY l.created_at DESC, l.id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	summaries := []LoopSummary{}
+	for rows.Next() {
+		var summary LoopSummary
+		var created string
+		if err := rows.Scan(&summary.ID, &summary.Label, &summary.Status, &summary.RunID, &created, &summary.Traps); err != nil {
+			return nil, err
+		}
+		if summary.CreatedAt, err = parseStoredTime(created); err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+	}
+	return summaries, rows.Err()
+}
+
+// LogLine is one entry in a loop's log: what the agent did, and what Hamster
+// decided about it. Level colours it — good for a passed check, bad for a
+// failure, warn for a trap.
+type LogLine struct {
+	Text  string `json:"text"`
+	Level string `json:"level"`
+}
+
+// LoopDetail is everything the two right panels show for a selected loop: its
+// source on top, its log below.
+type LoopDetail struct {
+	Loop
+	Status        string                    `json:"status"`
+	Run           *RunObservation           `json:"run,omitempty"`
+	Limits        []LimitObservation        `json:"limits,omitempty"`
+	Verifications []VerificationObservation `json:"verifications,omitempty"`
+	Logs          []LogLine                 `json:"logs"`
+	Traps         []Trap                    `json:"traps,omitempty"`
+}
+
+// LoadLoop gathers a loop and, if it has a run, that run's activity as a log.
+func (s *Store) LoadLoop(ctx context.Context, id string) (*LoopDetail, error) {
+	loop, err := s.GetLoop(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	detail := &LoopDetail{Loop: *loop, Status: "armed"}
+	if loop.RunID == "" {
+		return detail, nil
+	}
+	run, err := s.ObserveRun(ctx, loop.RunID)
+	if err == sql.ErrNoRows {
+		detail.Status = "gone"
+		return detail, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	detail.Status = run.Run.Status
+	detail.Run, detail.Limits = &run.Run, run.Limits
+	for index := len(run.Events) - 1; index >= 0; index-- {
+		if len(run.Events[index].Verifications) > 0 {
+			detail.Verifications = run.Events[index].Verifications
+			break
+		}
+	}
+	detail.Logs = buildLogs(run.Events)
+	traps, err := s.ListOpenTraps(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	for _, trap := range traps {
+		if trap.RunID == loop.RunID {
+			detail.Traps = append(detail.Traps, trap)
+			detail.Logs = append(detail.Logs, LogLine{Text: "trap: " + trap.Prompt, Level: "warn"})
+		}
+	}
+	return detail, nil
+}
+
+// buildLogs turns a run's events into readable log lines, oldest first.
+func buildLogs(events []EventObservation) []LogLine {
+	logs := make([]LogLine, 0, len(events))
+	for _, event := range events {
+		switch {
+		case event.Command != "":
+			line := LogLine{Text: "· " + event.Command, Level: "info"}
+			if event.Decision == "deny" {
+				line.Level = "bad"
+				if event.Reason != "" {
+					line.Text = "denied: " + event.Reason
+				}
+			}
+			logs = append(logs, line)
+		case event.ToolName != "":
+			logs = append(logs, LogLine{Text: "· " + event.ToolName, Level: "info"})
+		}
+		for _, check := range event.Verifications {
+			mark, level := "✓", "good"
+			if check.Error != "" || !check.Passed {
+				mark, level = "✗", "bad"
+			}
+			text := mark + " " + check.Name
+			if check.Command != "" {
+				text += "  " + check.Command
+			}
+			logs = append(logs, LogLine{Text: text, Level: level})
+			if !check.Passed {
+				if detail := verifierDetail(check); detail != "" {
+					logs = append(logs, LogLine{Text: "    " + detail, Level: "dim"})
+				}
+			}
+		}
+	}
+	return logs
+}
+
+func verifierDetail(check VerificationObservation) string {
+	if output := strings.TrimSpace(check.Output); output != "" {
+		lines := strings.Split(output, "\n")
+		return strings.TrimSpace(lines[len(lines)-1])
+	}
+	return strings.TrimSpace(check.Error)
+}
+
+func scanLoop(row scanner) (*Loop, error) {
+	var loop Loop
 	var machineJSON []byte
 	var created string
 	var claimed sql.NullString
-	if err := row.Scan(&launch.Console, &launch.WorkspaceRoot, &machineJSON, &launch.Source, &created, &launch.ClaimedRunID, &claimed); err != nil {
+	if err := row.Scan(&loop.ID, &loop.Console, &loop.WorkspaceRoot, &loop.Source, &loop.Label, &machineJSON, &created, &loop.RunID, &claimed); err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(machineJSON, &launch.Machine); err != nil {
-		return nil, fmt.Errorf("decode launch machine: %w", err)
+	if err := json.Unmarshal(machineJSON, &loop.Machine); err != nil {
+		return nil, fmt.Errorf("decode loop machine: %w", err)
 	}
 	var err error
-	if launch.CreatedAt, err = parseStoredTime(created); err != nil {
+	if loop.CreatedAt, err = parseStoredTime(created); err != nil {
 		return nil, err
 	}
 	if claimed.Valid {
@@ -141,14 +315,14 @@ func scanLaunch(row scanner) (*Launch, error) {
 		if err != nil {
 			return nil, err
 		}
-		launch.ClaimedAt = &at
+		loop.ClaimedAt = &at
 	}
-	return &launch, nil
+	return &loop, nil
 }
 
-// ConsoleObservation is everything a console pane shows about the agent it
-// is watching: the run bound to that agent's session, what the run is waiting
-// on, and the loop armed for it next.
+// ConsoleObservation is what the dashboard reads about the agent bound to a
+// console: the run its session is on now, what that run waits on, and the
+// loop armed for it next. The list of loops comes from ListLoops.
 type ConsoleObservation struct {
 	Console        string                     `json:"console"`
 	Bound          bool                       `json:"bound"`
@@ -160,13 +334,13 @@ type ConsoleObservation struct {
 	Summary        RunObservationEventSummary `json:"summary"`
 	TrapCount      int                        `json:"trap_count"`
 	Traps          []Trap                     `json:"traps,omitempty"`
-	Launch         *Launch                    `json:"launch,omitempty"`
+	Armed          *Loop                      `json:"armed,omitempty"`
 }
 
 func (s *Store) ObserveConsole(ctx context.Context, console string) (*ConsoleObservation, error) {
 	view := &ConsoleObservation{Console: console}
-	if launch, err := s.PendingLaunch(ctx, console); err == nil {
-		view.Launch = launch
+	if loop, err := s.PendingLoop(ctx, console); err == nil {
+		view.Armed = loop
 	} else if err != sql.ErrNoRows {
 		return nil, err
 	}
@@ -190,8 +364,6 @@ func (s *Store) ObserveConsole(ctx context.Context, console string) (*ConsoleObs
 		return nil, err
 	}
 	view.Run, view.Limits, view.Summary = &detail.Run, detail.Limits, detail.Summary
-	// The most recent probe is the one the person wants: what was checked
-	// last, and whether it passed.
 	for index := len(detail.Events) - 1; index >= 0; index-- {
 		if len(detail.Events[index].Verifications) > 0 {
 			view.Verifications = detail.Events[index].Verifications

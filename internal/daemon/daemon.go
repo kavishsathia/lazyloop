@@ -373,17 +373,33 @@ func (s *Server) Handle(ctx context.Context, request protocol.Request) protocol.
 			WorkspaceRoot string     `json:"workspace_root"`
 			Machine       ir.Machine `json:"machine"`
 			Source        string     `json:"source,omitempty"`
+			Label         string     `json:"label,omitempty"`
 		}
 		if err = json.Unmarshal(request.Params, &params); err == nil {
-			result, err = s.store.ArmLaunch(ctx, params.Console, params.WorkspaceRoot, params.Machine, params.Source)
+			result, err = s.store.ArmLoop(ctx, params.Console, params.WorkspaceRoot, params.Machine, params.Source, params.Label)
 		}
 	case "console.disarm":
 		var params struct {
 			Console string `json:"console"`
 		}
 		if err = json.Unmarshal(request.Params, &params); err == nil {
-			err = s.store.DisarmLaunch(ctx, params.Console)
+			err = s.store.DisarmLoop(ctx, params.Console)
 			result = map[string]any{"ok": err == nil}
+		}
+	case "loops.list":
+		var params struct {
+			WorkspaceRoot string `json:"workspace_root,omitempty"`
+			Limit         int    `json:"limit,omitempty"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.ListLoops(ctx, params.WorkspaceRoot, params.Limit)
+		}
+	case "loops.get":
+		var params struct {
+			ID string `json:"id"`
+		}
+		if err = json.Unmarshal(request.Params, &params); err == nil {
+			result, err = s.store.LoadLoop(ctx, params.ID)
 		}
 	case "hook.event":
 		var params hook.HookRequest
@@ -534,7 +550,7 @@ func (s *Server) bindConsole(ctx context.Context, params hook.HookRequest) (*sto
 	} else if err != sql.ErrNoRows {
 		return nil, err
 	}
-	claimed, err := s.store.ClaimLaunch(ctx, params.Console, event.SessionID)
+	claimed, err := s.store.ClaimLoop(ctx, params.Console, event.SessionID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

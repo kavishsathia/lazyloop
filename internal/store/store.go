@@ -158,15 +158,20 @@ CREATE TABLE IF NOT EXISTS consoles (
   updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS launches (
-  console TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS loops (
+  id TEXT PRIMARY KEY,
+  console TEXT NOT NULL,
   workspace_root TEXT NOT NULL,
-  machine_json BLOB NOT NULL,
   source TEXT NOT NULL DEFAULT '',
+  label TEXT NOT NULL DEFAULT '',
+  machine_json BLOB NOT NULL,
   created_at TEXT NOT NULL,
-  claimed_run_id TEXT,
+  run_id TEXT,
   claimed_at TEXT
 );
+
+CREATE INDEX IF NOT EXISTS loops_console ON loops(console, created_at);
+CREATE INDEX IF NOT EXISTS loops_workspace ON loops(workspace_root, created_at);
 
 CREATE TABLE IF NOT EXISTS traps (
   id TEXT PRIMARY KEY,

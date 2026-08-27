@@ -15,7 +15,7 @@ import (
 // the control socket; tests implement it in memory.
 type Backend interface {
 	Observe(ctx context.Context, console string) (*store.ConsoleObservation, error)
-	Arm(ctx context.Context, console, workspaceRoot string, machine ir.Machine, source string) error
+	Arm(ctx context.Context, console, workspaceRoot string, machine ir.Machine, source, label string) error
 	Disarm(ctx context.Context, console string) error
 	Resolve(ctx context.Context, trapID, resolution, note string) error
 	Kill(ctx context.Context, codexSessionID, reason string) error
@@ -34,9 +34,9 @@ func (b DaemonBackend) Observe(ctx context.Context, console string) (*store.Cons
 	return &view, nil
 }
 
-func (b DaemonBackend) Arm(ctx context.Context, console, workspaceRoot string, machine ir.Machine, source string) error {
+func (b DaemonBackend) Arm(ctx context.Context, console, workspaceRoot string, machine ir.Machine, source, label string) error {
 	return b.Client.Call(ctx, requestID(), "console.arm", map[string]any{
-		"console": console, "workspace_root": workspaceRoot, "machine": machine, "source": source,
+		"console": console, "workspace_root": workspaceRoot, "machine": machine, "source": source, "label": label,
 	}, nil)
 }
 

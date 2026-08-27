@@ -68,9 +68,9 @@ func (c *console) render(lay layout, quip int) []string {
 
 	body = append(body, c.loopPanel(width, view)...)
 
-	if view != nil && view.Launch != nil {
+	if view != nil && view.Armed != nil {
 		body = append(body, panel(width, "armed", borderRun, []line{
-			{launchLabel(*view.Launch), styleBold},
+			{loopLabel(*view.Armed), styleBold},
 			{"starts with the agent's next message", styleDim},
 			{"x  disarm", styleKey},
 		})...)
@@ -342,7 +342,7 @@ func wrapRunes(text string, width int) []string {
 	return append(lines, string(runes))
 }
 
-func launchLabel(launch store.Launch) string {
+func loopLabel(launch store.Loop) string {
 	if launch.Source == "" {
 		return launch.Machine.Name
 	}

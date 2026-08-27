@@ -224,11 +224,12 @@ func (c *console) arm(text string) {
 		return
 	}
 	prompt := agentPrompt(text, source)
+	label := strings.TrimSpace(text)
 	c.message = "…"
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := c.backend.Arm(ctx, c.token, c.dir, machine, source)
+		err := c.backend.Arm(ctx, c.token, c.dir, machine, source, label)
 		c.mu.Lock()
 		start := err == nil && c.sendAgent != nil
 		if err != nil {
@@ -356,7 +357,7 @@ func sameView(a, b *store.ConsoleObservation) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	if a.Bound != b.Bound || len(a.Traps) != len(b.Traps) || (a.Launch == nil) != (b.Launch == nil) || (a.Run == nil) != (b.Run == nil) {
+	if a.Bound != b.Bound || len(a.Traps) != len(b.Traps) || (a.Armed == nil) != (b.Armed == nil) || (a.Run == nil) != (b.Run == nil) {
 		return false
 	}
 	if a.Run != nil && (a.Run.ID != b.Run.ID || a.Run.StateID != b.Run.StateID || a.Run.Status != b.Run.Status || a.Run.Iteration != b.Run.Iteration || a.Run.UpdatedAt != b.Run.UpdatedAt) {

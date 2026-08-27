@@ -54,7 +54,7 @@ func TestArmedLaunchIsClaimedByTheNextPromptAndAnnounced(t *testing.T) {
 	server := New(state)
 
 	call(t, server, "arm", "console.arm", map[string]any{
-		"console": "console-1", "workspace_root": "/repo", "machine": consoleTestMachine(t), "source": "go test",
+		"console": "console-1", "workspace_root": "/repo", "machine": consoleTestMachine(t), "source": "goal { … }", "label": "go test",
 	}, nil)
 
 	// A turn ending must not claim: the agent should meet the loop as it
@@ -65,7 +65,7 @@ func TestArmedLaunchIsClaimedByTheNextPromptAndAnnounced(t *testing.T) {
 	}}, &decision)
 	var view store.ConsoleObservation
 	call(t, server, "observe-1", "console.observe", map[string]string{"console": "console-1"}, &view)
-	if !view.Bound || view.CodexSessionID != "session" || view.Run != nil || view.Launch == nil {
+	if !view.Bound || view.CodexSessionID != "session" || view.Run != nil || view.Armed == nil {
 		t.Fatalf("after Stop, view = %+v", view)
 	}
 
@@ -89,7 +89,7 @@ func TestArmedLaunchIsClaimedByTheNextPromptAndAnnounced(t *testing.T) {
 	}
 
 	call(t, server, "observe-2", "console.observe", map[string]string{"console": "console-1"}, &view)
-	if view.Run == nil || view.Run.ID != run.ID || view.Launch != nil {
+	if view.Run == nil || view.Run.ID != run.ID || view.Armed != nil {
 		t.Fatalf("after claim, view = %+v", view)
 	}
 	if len(view.Limits) != 1 || view.Limits[0].Kind != "attempts" {
@@ -103,6 +103,19 @@ func TestArmedLaunchIsClaimedByTheNextPromptAndAnnounced(t *testing.T) {
 	}}, &decision)
 	if decision.Permission != "allow" || decision.RunID != run.ID || strings.Contains(decision.Context, "lazyloop console") {
 		t.Fatalf("governed decision = %+v", decision)
+	}
+
+	// The loop is in the persistent list, following its run, and its detail
+	// carries the source the console armed.
+	var loops []store.LoopSummary
+	call(t, server, "list-1", "loops.list", map[string]any{"workspace_root": "/repo"}, &loops)
+	if len(loops) != 1 || loops[0].RunID != run.ID || loops[0].Status != "running" {
+		t.Fatalf("loops.list = %+v", loops)
+	}
+	var detail store.LoopDetail
+	call(t, server, "get-1", "loops.get", map[string]string{"id": loops[0].ID}, &detail)
+	if detail.Run == nil || detail.Run.ID != run.ID || detail.Source == "" {
+		t.Fatalf("loops.get = %+v", detail)
 	}
 }
 

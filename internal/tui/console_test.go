@@ -30,14 +30,14 @@ func (f *fakeBackend) Observe(context.Context, string) (*store.ConsoleObservatio
 	return &view, nil
 }
 
-func (f *fakeBackend) Arm(_ context.Context, _, _ string, machine ir.Machine, source string) error {
+func (f *fakeBackend) Arm(_ context.Context, _, _ string, machine ir.Machine, source, label string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fail != nil {
 		return f.fail
 	}
 	f.armed = append(f.armed, source)
-	f.view.Launch = &store.Launch{Machine: machine, Source: source}
+	f.view.Armed = &store.Loop{Machine: machine, Source: source, Label: label}
 	return nil
 }
 
@@ -45,7 +45,7 @@ func (f *fakeBackend) Disarm(context.Context, string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.disarmed++
-	f.view.Launch = nil
+	f.view.Armed = nil
 	return nil
 }
 
