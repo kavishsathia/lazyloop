@@ -55,6 +55,23 @@ cycle before probing the goal. `hamster signal goal-achieved` remains available
 as an optional immediate probe, but correctness does not depend on Codex
 remembering to call it.
 
+## Split screen
+
+A bare `hamster` opens a split screen in the current directory: a hamster on
+the left, Codex on the right. Put the binary on your `PATH` once and it works
+from any project:
+
+```sh
+go install ./cmd/hamster
+cd ~/some/project
+hamster
+```
+
+The agent is the stock CLI on a pseudo-terminal, so its rendering and any
+project hooks are exactly what they would be outside Hamster. Everything you
+type goes to the agent; leaving the agent leaves Hamster. `HAMSTER_AGENT`
+swaps the right pane for another command, for example `HAMSTER_AGENT=claude`.
+
 ## Traps
 
 `verify` asks the machine. `trap` asks the person. A trap suspends the run and

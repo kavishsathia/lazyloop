@@ -26,6 +26,7 @@ import (
 	"hamster/internal/reference"
 	"hamster/internal/store"
 	"hamster/internal/trace"
+	"hamster/internal/tui"
 	"hamster/internal/version"
 )
 
@@ -41,7 +42,11 @@ func main() {
 
 func run(ctx context.Context, arguments []string) error {
 	if len(arguments) == 0 {
-		return usageError()
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		return tui.Run(ctx, tui.Options{Dir: cwd, Agent: agentCommand()})
 	}
 	switch arguments[0] {
 	case "version":
@@ -1130,6 +1135,15 @@ func printRunSummary(run store.Run) error {
 
 func requestID() string {
 	return fmt.Sprintf("cli-%d", time.Now().UnixNano())
+}
+
+// agentCommand is the CLI that runs on the right of the split screen.
+// HAMSTER_AGENT overrides it, e.g. HAMSTER_AGENT="claude" or a whole argv.
+func agentCommand() []string {
+	if override := strings.TrimSpace(os.Getenv("HAMSTER_AGENT")); override != "" {
+		return strings.Fields(override)
+	}
+	return []string{"codex"}
 }
 
 func usageError() error {
